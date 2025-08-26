@@ -551,7 +551,6 @@ int main(int argc, char* argv[])
 	t = getTickCount();
 #endif
 
-
 	for(int k = 0; k < num_mat; k++){
 
 		vector<Point> corners(num_images);
@@ -559,19 +558,15 @@ int main(int argc, char* argv[])
 		vector<UMat> images_warped(num_images);
 		vector<Size> sizes(num_images);
 		vector<UMat> masks(num_images);
-		//images_warped.resize(num_images); 
-		//corners.resize(num_images);
-		//sizes.resize(num_images);
-		//masks.resize(num_images);
+
 		cout << "#### seam scale " << seam_scale << endl;
 		for(int i = 0; i < num_images && k != 0; i++){	
-			cout << "Enter" << endl;	
+
 			if(i == 0)
 				full_img = img1[k];
 			else
 				full_img = img2[k];
 
-			resize(full_img, img, Size(), work_scale, work_scale, INTER_LINEAR_EXACT);
 			resize(full_img, img, Size(), seam_scale, seam_scale, INTER_LINEAR_EXACT);
 			images[i] = img.clone();
 		}
@@ -663,10 +658,7 @@ int main(int argc, char* argv[])
 			bcompensator->setNrGainsFilteringIterations(expos_comp_nr_filtering);
 			bcompensator->setBlockSize(expos_comp_block_size, expos_comp_block_size);
 		}
-		/*std::cout << "corners.size(): " << corners.size() << std::endl;
-		std::cout << "images_warped.size(): " << images_warped.size() << std::endl;
-		std::cout << "masks_warped.size(): " << masks_warped.size() << std::endl;
-*/
+
 		compensator->feed(corners, images_warped, masks_warped);
 		LOGLN("Compensating exposure, time: " << ((getTickCount() - t) / getTickFrequency()) << " sec");
 		LOGLN("Finding seams...");
@@ -707,7 +699,7 @@ int main(int argc, char* argv[])
 #if ENABLE_LOG
 		t = getTickCount();
 #endif
-		for (int img_idx = 0; img_idx < num_images; ++img_idx)
+		for (int img_idx = 0; img_idx < num_images && k == 0; ++img_idx)
 		{
 			LOGLN("Compositing image #" << indices[img_idx]+1);
 			// Read image and resize it if necessary
@@ -724,7 +716,7 @@ int main(int argc, char* argv[])
 					compose_scale = min(1.0, sqrt(compose_megapix * 1e6 / full_img.size().area()));
 				is_compose_scale_set = true;
 				// Compute relative scales
-				//compose_seam_aspect = compose_scale / seam_scale;
+			//	compose_seam_aspect = compose_scale / seam_scale;
 				compose_work_aspect = compose_scale / work_scale;
 				// Update warped image scale
 				warped_image_scale *= static_cast<float>(compose_work_aspect);

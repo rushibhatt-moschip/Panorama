@@ -60,7 +60,7 @@ int main(int argc, char* argv[]) {
 		rect1.x = frame2.cols / 2;
 		imgs.push_back(frame2(rect1).clone());
 
-		Ptr<Stitcher> stitcher = Stitcher::create(Stitcher::SCANS);
+		Ptr<Stitcher> stitcher = Stitcher::create(Stitcher::PANORAMAS);
 		Mat pano;
 		Stitcher::Status status = stitcher->stitch(imgs, pano);
 
