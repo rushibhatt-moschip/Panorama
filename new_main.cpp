@@ -20,38 +20,15 @@
 #include "opencv2/xfeatures2d/nonfree.hpp"
 #endif
 #define ENABLE_LOG 1
-#define LOG(msg) std::cout << msg << std::endl
+#define LOG(msg) std::cout << msg
 #define LOGLN(msg) std::cout << msg << std::endl
 using namespace std;
 using namespace cv;
 using namespace cv::detail;
-
-Mat img_warped, img_warped_s;
-Mat dilated_mask, seam_mask, mask, mask_warped;
-Ptr<Blender> blender;
-Ptr<Timelapser> timelapser;
-double compose_seam_aspect = 1;
-double compose_work_aspect = 1;
-static int num_images = 2;
-Mat full_img, img;
-vector<ImageFeatures> features(num_images);
-vector<Mat> images(num_images);
-vector<Size> full_img_sizes(num_images);
-double seam_work_aspect = 1;
-static Ptr<SeamFinder> seam_finder;
-static Ptr<WarperCreator> warper_creator;
-vector<MatchesInfo> pairwise_matches;
-Ptr<FeaturesMatcher> matcher;
-Ptr<Feature2D> finder;
-float warped_image_scale;
-vector<double> focals;
-Ptr<detail::BundleAdjusterBase> adjuster;
-Ptr<Estimator> estimator;
-vector<CameraParams> cameras;
-vector<String> vid_names;
 // Default command line args
 vector<String> img_names;
 bool preview = false;
+static int num_images = 2;
 bool try_cuda = false;
 double work_megapix = 0.6;
 double seam_megapix = 0.1;
@@ -84,6 +61,19 @@ float blend_strength = 5;
 string result_name = "result.jpg";
 bool timelapse = false;
 int range_width = -1;
+Ptr<WarperCreator> warper_creator;
+
+
+vector<MatchesInfo> pairwise_matches;
+Ptr<FeaturesMatcher> matcher;
+Ptr<Estimator> estimator;
+vector<CameraParams> cameras;
+Ptr<detail::BundleAdjusterBase> adjuster;
+vector<double> focals;
+float warped_image_scale;
+Ptr<SeamFinder> seam_finder;
+Ptr<ExposureCompensator> compensator; 
+
 static int parseCmdArgs(int argc, char** argv)
 {
 	if (argc == 1)
@@ -315,21 +305,7 @@ static int parseCmdArgs(int argc, char** argv)
 			result_name = argv[i + 1];
 			i++;
 		}
-		else if(string(argv[i]) == "--video1")
-		{
-
-			cout << "Video 1 read" << endl;
-			vid_names.push_back(argv[i+1]);
-			i++;
-
-		}
-		else if(string(argv[i]) == "--video2")
-		{
-
-			cout << "Video 2 read" << endl;
-			vid_names.push_back(argv[i+1]);
-			i++;
-		}else
+		else
 			img_names.push_back(argv[i]);
 	}
 	if (preview)
@@ -341,92 +317,72 @@ static int parseCmdArgs(int argc, char** argv)
 
 int main(int argc, char* argv[])
 {
-#if ENABLE_LOG
-	int64 app_start_time = getTickCount();
-#endif
-#if 0
-	cv::setBreakOnError(true);
-#endif
+
+	VideoWriter writer("stitched_output.mkv",
+			VideoWriter::fourcc('X','2','6','4'), // codec
+			30,                                  // FPS
+			Size(640, 480));                   
+
+	if (!writer.isOpened()) {
+		std::cerr << "Could not open the output video file for write\n";
+		return -1;
+	}
+
+	int fg = 0; 
+	int bg = 1; 
+	int sg = 1; 
+
 	int retval = parseCmdArgs(argc, argv);
 	if (retval)
 		return retval;
-
-	// Open videos
-	VideoCapture cap1(vid_names[0]);
-	VideoCapture cap2(vid_names[1]);
+	
+	VideoCapture cap1("/home/devashree-katarkar/Downloads/left.mkv");
+	VideoCapture cap2("/home/devashree-katarkar/Downloads/right.mkv");
 
 	if (!cap1.isOpened() || !cap2.isOpened()) {
 		cerr << "Error: Could not open video files" << endl;
 		return -1;
 	}
-	vector<Mat> img1;
-	vector<Mat> img2;
 
-	Mat frame;
+#if ENABLE_LOG
+	int64 t = getTickCount();
+#endif
+	vector<int> indices;
 
-	// Extract frames from Video 1
-	while (true) {
-		if (!cap1.read(frame)) break;   // End of video
-		img1.push_back(frame.clone()); // Store a copy of frame
-	}
-	cout << "Extracted " << img1.size() << " frames from " << endl;
+	while(1){
 
-	// Extract frames from Video 2
-	while (true) {
-		if (!cap2.read(frame)) break;
-		img2.push_back(frame.clone());
-	}
-	cout << "Extracted " << img2.size() << " frames from " << endl;
+	Mat frame1, frame2;
 
-	int num_mat = min(img1.size(),img2.size());
+	cap1 >> frame1;
+	cap2 >> frame2;
+
+	if (frame1.empty() || frame2.empty()) return 0;
+
+	std::vector<Mat> frames = {frame1, frame2};
 
 	double work_scale = 1, seam_scale = 1, compose_scale = 1;
 	bool is_work_scale_set = false, is_seam_scale_set = false, is_compose_scale_set = false;
 	LOGLN("Finding features...");
 
-#if ENABLE_LOG
-	int64 t = getTickCount();
-#endif		
+	// Using SIFT finder
+	Ptr<Feature2D> finder;
+	finder = SIFT::create();
 
-	if (features_type == "orb")
-	{
-		finder = ORB::create();
-	}
-	else if (features_type == "akaze")
-	{
-		finder = AKAZE::create();
-	}
-#ifdef HAVE_OPENCV_XFEATURES2D
-	else if (features_type == "surf")
-	{
-		finder = xfeatures2d::SURF::create();
-	}
-#endif
-	else if (features_type == "sift")
-	{
-		finder = SIFT::create();
-	}
-	else
-	{
-		cout << "Unknown 2D features type: '" << features_type << "'.\n";
-		return -1;
-	}
-		
-
+	Mat full_img, img;
+	vector<ImageFeatures> features(num_images);
+	vector<Mat> images(num_images);
+	vector<Size> full_img_sizes(num_images);
+	double seam_work_aspect = 1;
 
 	for (int i = 0; i < num_images; ++i)
 	{
-
-		if(i == 0){
-			full_img = img1[0];
-		}else{
-			full_img = img2[0];
-		}
-
+		//full_img = imread(samples::findFile(img_names[i]));
+		full_img = frames[i];
 		full_img_sizes[i] = full_img.size();
+
 		if (full_img.empty())
 		{
-			//LOGLN("Can't open image " << img_names[i]);
+			LOGLN("Can't open image " << img_names[i]);
 			return -1;
 		}
 
@@ -459,8 +415,6 @@ int main(int argc, char* argv[])
 		images[i] = img.clone();
 	}
 
-	full_img.release();
-	img.release();
 	LOGLN("Finding features, time: " << ((getTickCount() - t) / getTickFrequency()) << " sec");
 	LOG("Pairwise matching");
 
@@ -468,100 +422,73 @@ int main(int argc, char* argv[])
 	t = getTickCount();
 #endif
 
-	if (matcher_type == "affine")
-		matcher = makePtr<AffineBestOf2NearestMatcher>(false, try_cuda, match_conf);
-	else if (range_width==-1)
+	//if(bg){
 		matcher = makePtr<BestOf2NearestMatcher>(try_cuda, match_conf);
-	else
-		matcher = makePtr<BestOf2NearestRangeMatcher>(range_width, try_cuda, match_conf);
-	(*matcher)(features, pairwise_matches);
-	matcher->collectGarbage();
-	LOGLN("Pairwise matching, time: " << ((getTickCount() - t) / getTickFrequency()) << " sec");
+		(*matcher)(features, pairwise_matches);
+		matcher->collectGarbage();
 
-	// Leave only images we are sure are from the same panorama
-	vector<int> indices = leaveBiggestComponent(features, pairwise_matches, conf_thresh);
-
-	if (estimator_type == "affine")
-		estimator = makePtr<AffineBasedEstimator>();
-	else
+		LOGLN("Pairwise matching, time: " << ((getTickCount() - t) / getTickFrequency()) << " sec");
+		
+		indices = leaveBiggestComponent(features, pairwise_matches, conf_thresh);
 		estimator = makePtr<HomographyBasedEstimator>();
 
+		if (!(*estimator)(features, pairwise_matches, cameras))
+		{
+			cout << "Homography estimation failed.\n";
+			return -1;
+		}
+		
+		for (size_t i = 0; i < cameras.size(); ++i)
+		{
+			Mat R;
+			cameras[i].R.convertTo(R, CV_32F);
+			cameras[i].R = R;
+			LOGLN("Initial camera intrinsics #" << indices[i]+1 << ":\nK:\n" << cameras[i].K() << "\nR:\n" << cameras[i].R);
+		}
 
-	if (!(*estimator)(features, pairwise_matches, cameras))
-	{
-		cout << "Homography estimation failed.\n";
-		return -1;
-	}
+		adjuster = makePtr<detail::BundleAdjusterRay>();
+		adjuster->setConfThresh(conf_thresh);
 
+		Mat_<uchar> refine_mask = Mat::zeros(3, 3, CV_8U);
+		if (ba_refine_mask[0] == 'x') refine_mask(0,0) = 1;
+		if (ba_refine_mask[1] == 'x') refine_mask(0,1) = 1;
+		if (ba_refine_mask[2] == 'x') refine_mask(0,2) = 1;
+		if (ba_refine_mask[3] == 'x') refine_mask(1,1) = 1;
+		if (ba_refine_mask[4] == 'x') refine_mask(1,2) = 1;
+		
+		adjuster->setRefinementMask(refine_mask);
+		
+		if (!(*adjuster)(features, pairwise_matches, cameras))
+		{
+			cout << "Camera parameters adjusting failed.\n";
+			return -1;
+		}
 
-	for (size_t i = 0; i < cameras.size(); ++i)
-	{
-		Mat R;
-		cameras[i].R.convertTo(R, CV_32F);
-		cameras[i].R = R;
-		LOGLN("Initial camera intrinsics #" << indices[i]+1 << ":\nK:\n" << cameras[i].K() << "\nR:\n" << cameras[i].R);
-	}
+		// Find median focal length
+		for (size_t i = 0; i < cameras.size(); ++i)
+		{
+			LOGLN("Camera #" << indices[i]+1 << ":\nK:\n" << cameras[i].K() << "\nR:\n" << cameras[i].R);
+			focals.push_back(cameras[i].focal);
+		}
+		
+		sort(focals.begin(), focals.end());
+		
+		if (focals.size() % 2 == 1)
+			warped_image_scale = static_cast<float>(focals[focals.size() / 2]);
+		else
+			warped_image_scale = static_cast<float>(focals[focals.size() / 2 - 1] + focals[focals.size() / 2]) * 0.5f;
 
-	if (ba_cost_func == "reproj") adjuster = makePtr<detail::BundleAdjusterReproj>();
-	else if (ba_cost_func == "ray") adjuster = makePtr<detail::BundleAdjusterRay>();
-	else if (ba_cost_func == "affine") adjuster = makePtr<detail::BundleAdjusterAffinePartial>();
-	else if (ba_cost_func == "no") adjuster = makePtr<NoBundleAdjuster>();
-	else
-	{
-		cout << "Unknown bundle adjustment cost function: '" << ba_cost_func << "'.\n";
-		return -1;
-	}
-
-	adjuster->setConfThresh(conf_thresh);
-	Mat_<uchar> refine_mask = Mat::zeros(3, 3, CV_8U);
-	if (ba_refine_mask[0] == 'x') refine_mask(0,0) = 1;
-	if (ba_refine_mask[1] == 'x') refine_mask(0,1) = 1;
-	if (ba_refine_mask[2] == 'x') refine_mask(0,2) = 1;
-	if (ba_refine_mask[3] == 'x') refine_mask(1,1) = 1;
-	if (ba_refine_mask[4] == 'x') refine_mask(1,2) = 1;
-	adjuster->setRefinementMask(refine_mask);
-	if (!(*adjuster)(features, pairwise_matches, cameras))
-	{
-		cout << "Camera parameters adjusting failed.\n";
-		return -1;
-	}
-	// Find median focal length
-	for (size_t i = 0; i < cameras.size(); ++i)
-	{
-		LOGLN("Camera #" << indices[i]+1 << ":\nK:\n" << cameras[i].K() << "\nR:\n" << cameras[i].R);
-		focals.push_back(cameras[i].focal);
-	}
-	sort(focals.begin(), focals.end());
-	if (focals.size() % 2 == 1)
-		warped_image_scale = static_cast<float>(focals[focals.size() / 2]);
-	else
-		warped_image_scale = static_cast<float>(focals[focals.size() / 2 - 1] + focals[focals.size() / 2]) * 0.5f;
-
-	LOGLN("Warping images (auxiliary)... ");
-
+		LOGLN("Warping images (auxiliary)... ");
 #if ENABLE_LOG
-	t = getTickCount();
+		t = getTickCount();
 #endif
-
-	for(int k = 0; k < num_mat; k++){
-
+		bg = 0;
+		
 		vector<Point> corners(num_images);
 		vector<UMat> masks_warped(num_images);
 		vector<UMat> images_warped(num_images);
 		vector<Size> sizes(num_images);
 		vector<UMat> masks(num_images);
-
-		cout << "#### seam scale " << seam_scale << endl;
-		for(int i = 0; i < num_images && k != 0; i++){	
-
-			if(i == 0)
-				full_img = img1[k];
-			else
-				full_img = img2[k];
-
-			resize(full_img, img, Size(), seam_scale, seam_scale, INTER_LINEAR_EXACT);
-			images[i] = img.clone();
-		}
 
 		// Prepare images masks
 		for (int i = 0; i < num_images; ++i)
@@ -571,38 +498,7 @@ int main(int argc, char* argv[])
 		}
 
 		// Warp images and their masks
-		if (warp_type == "plane")
-			warper_creator = makePtr<cv::PlaneWarper>();
-		else if (warp_type == "affine")
-			warper_creator = makePtr<cv::AffineWarper>();
-		else if (warp_type == "cylindrical")
-			warper_creator = makePtr<cv::CylindricalWarper>();
-		else if (warp_type == "spherical")
-			warper_creator = makePtr<cv::SphericalWarper>();
-		else if (warp_type == "fisheye")
-			warper_creator = makePtr<cv::FisheyeWarper>();
-		else if (warp_type == "stereographic")
-			warper_creator = makePtr<cv::StereographicWarper>();
-		else if (warp_type == "compressedPlaneA2B1")
-			warper_creator = makePtr<cv::CompressedRectilinearWarper>(2.0f, 1.0f);
-		else if (warp_type == "compressedPlaneA1.5B1")
-			warper_creator = makePtr<cv::CompressedRectilinearWarper>(1.5f, 1.0f);
-		else if (warp_type == "compressedPlanePortraitA2B1")
-			warper_creator = makePtr<cv::CompressedRectilinearPortraitWarper>(2.0f, 1.0f);
-		else if (warp_type == "compressedPlanePortraitA1.5B1")
-			warper_creator = makePtr<cv::CompressedRectilinearPortraitWarper>(1.5f, 1.0f);
-		else if (warp_type == "paniniA2B1")
-			warper_creator = makePtr<cv::PaniniWarper>(2.0f, 1.0f);
-		else if (warp_type == "paniniA1.5B1")
-			warper_creator = makePtr<cv::PaniniWarper>(1.5f, 1.0f);
-		else if (warp_type == "paniniPortraitA2B1")
-			warper_creator = makePtr<cv::PaniniPortraitWarper>(2.0f, 1.0f);
-		else if (warp_type == "paniniPortraitA1.5B1")
-			warper_creator = makePtr<cv::PaniniPortraitWarper>(1.5f, 1.0f);
-		else if (warp_type == "mercator")
-			warper_creator = makePtr<cv::MercatorWarper>();
-		else if (warp_type == "transverseMercator")
-			warper_creator = makePtr<cv::TransverseMercatorWarper>();
+		warper_creator = makePtr<cv::SphericalWarper>();
 
 		if (!warper_creator)
 		{
@@ -610,8 +506,7 @@ int main(int argc, char* argv[])
 			return 1;
 		}
 
-		static Ptr<RotationWarper> warper = warper_creator->create(static_cast<float>(warped_image_scale * seam_work_aspect));
-		
+		Ptr<RotationWarper> warper = warper_creator->create(static_cast<float>(warped_image_scale * seam_work_aspect));
 		for (int i = 0; i < num_images; ++i)
 		{
 			Mat_<float> K;
@@ -623,7 +518,6 @@ int main(int argc, char* argv[])
 			sizes[i] = images_warped[i].size();
 			warper->warp(masks[i], K, cameras[i].R, INTER_NEAREST, BORDER_CONSTANT, masks_warped[i]);
 		}
-
 		vector<UMat> images_warped_f(num_images);
 		for (int i = 0; i < num_images; ++i)
 			images_warped[i].convertTo(images_warped_f[i], CV_32F);
@@ -632,44 +526,39 @@ int main(int argc, char* argv[])
 #if ENABLE_LOG
 		t = getTickCount();
 #endif
-		static Ptr<ExposureCompensator> compensator = ExposureCompensator::createDefault(expos_comp_type);
-		if (dynamic_cast<GainCompensator*>(compensator.get()))
-		{
-			GainCompensator* gcompensator = dynamic_cast<GainCompensator*>(compensator.get());
-			gcompensator->setNrFeeds(expos_comp_nr_feeds);
-		}
-		if (dynamic_cast<ChannelsCompensator*>(compensator.get()))
-		{
-			ChannelsCompensator* ccompensator = dynamic_cast<ChannelsCompensator*>(compensator.get());
-			ccompensator->setNrFeeds(expos_comp_nr_feeds);
-		}
-		if (dynamic_cast<BlocksCompensator*>(compensator.get()))
-		{
-			BlocksCompensator* bcompensator = dynamic_cast<BlocksCompensator*>(compensator.get());
-			bcompensator->setNrFeeds(expos_comp_nr_feeds);
-			bcompensator->setNrGainsFilteringIterations(expos_comp_nr_filtering);
-			bcompensator->setBlockSize(expos_comp_block_size, expos_comp_block_size);
-		}
-
+		//if(sg){
+			compensator = ExposureCompensator::createDefault(expos_comp_type);
+			if (dynamic_cast<GainCompensator*>(compensator.get()))
+			{
+				GainCompensator* gcompensator = dynamic_cast<GainCompensator*>(compensator.get());
+				gcompensator->setNrFeeds(expos_comp_nr_feeds);
+			}
+			if (dynamic_cast<ChannelsCompensator*>(compensator.get()))
+			{
+				ChannelsCompensator* ccompensator = dynamic_cast<ChannelsCompensator*>(compensator.get());
+				ccompensator->setNrFeeds(expos_comp_nr_feeds);
+			}
+			if (dynamic_cast<BlocksCompensator*>(compensator.get()))
+			{
+				BlocksCompensator* bcompensator = dynamic_cast<BlocksCompensator*>(compensator.get());
+				bcompensator->setNrFeeds(expos_comp_nr_feeds);
+				bcompensator->setNrGainsFilteringIterations(expos_comp_nr_filtering);
+				bcompensator->setBlockSize(expos_comp_block_size, expos_comp_block_size);
+			}
+	//	}
 		compensator->feed(corners, images_warped, masks_warped);
-		LOGLN("Compensating exposure, time: " << ((getTickCount() - t) / getTickFrequency()) << " sec");
-		LOGLN("Finding seams...");
-#if ENABLE_LOG
-		t = getTickCount();
-#endif
-		if(k == 0){
+		//LOGLN("Compensating exposure, time: " << ((getTickCount() - t) / getTickFrequency()) << " sec");
+		//LOGLN("Finding seams...");
+		
+	//	if(sg){
 			if (seam_find_type == "no")
 				seam_finder = makePtr<detail::NoSeamFinder>();
 			else if (seam_find_type == "voronoi")
 				seam_finder = makePtr<detail::VoronoiSeamFinder>();
 			else if (seam_find_type == "gc_color")
-			{
 				seam_finder = makePtr<detail::GraphCutSeamFinder>(GraphCutSeamFinderBase::COST_COLOR);
-			}
 			else if (seam_find_type == "gc_colorgrad")
-			{
 				seam_finder = makePtr<detail::GraphCutSeamFinder>(GraphCutSeamFinderBase::COST_COLOR_GRAD);
-			}
 			else if (seam_find_type == "dp_color")
 				seam_finder = makePtr<detail::DpSeamFinder>(DpSeamFinder::COLOR);
 			else if (seam_find_type == "dp_colorgrad")
@@ -679,7 +568,9 @@ int main(int argc, char* argv[])
 				cout << "Can't create the following seam finder '" << seam_find_type << "'\n";
 				return 1;
 			}
-		}
+			sg = 0;
+	//	}
+
 		seam_finder->find(images_warped_f, corners, masks_warped);
 		LOGLN("Finding seams, time: " << ((getTickCount() - t) / getTickFrequency()) << " sec");
 		// Release unused memory
@@ -687,29 +578,28 @@ int main(int argc, char* argv[])
 		images_warped.clear();
 		images_warped_f.clear();
 		masks.clear();
-		
 		LOGLN("Compositing...");
-#if ENABLE_LOG
-		t = getTickCount();
-#endif
+		
+
+		Mat img_warped, img_warped_s;
+		Mat dilated_mask, seam_mask, mask, mask_warped;
+		Ptr<Blender> blender;
+		Ptr<Timelapser> timelapser;
+		//double compose_seam_aspect = 1;
+		double compose_work_aspect = 1;
 		for (int img_idx = 0; img_idx < num_images; ++img_idx)
 		{
 			LOGLN("Compositing image #" << indices[img_idx]+1);
 			// Read image and resize it if necessary
-
-			if(img_idx <= 0){
-				full_img = img1[k];
-			}else{
-				full_img = img2[k];
-			}
-
+			//full_img = imread(samples::findFile(img_names[img_idx]));
+			full_img = frames[img_idx];
 			if (!is_compose_scale_set)
 			{
 				if (compose_megapix > 0)
 					compose_scale = min(1.0, sqrt(compose_megapix * 1e6 / full_img.size().area()));
 				is_compose_scale_set = true;
 				// Compute relative scales
-			//	compose_seam_aspect = compose_scale / seam_scale;
+				//compose_seam_aspect = compose_scale / seam_scale;
 				compose_work_aspect = compose_scale / work_scale;
 				// Update warped image scale
 				warped_image_scale *= static_cast<float>(compose_work_aspect);
@@ -739,8 +629,7 @@ int main(int argc, char* argv[])
 				resize(full_img, img, Size(), compose_scale, compose_scale, INTER_LINEAR_EXACT);
 			else
 				img = full_img;
-
-			//full_img.release();
+			full_img.release();
 			Size img_size = img.size();
 			Mat K;
 			cameras[img_idx].K().convertTo(K, CV_32F);
@@ -753,54 +642,64 @@ int main(int argc, char* argv[])
 			// Compensate exposure
 			compensator->apply(img_idx, corners[img_idx], img_warped, mask_warped);
 			img_warped.convertTo(img_warped_s, CV_16S);
-			//img_warped.release();
-			//img.release();
-			//mask.release();
+			img_warped.release();
+			img.release();
+			mask.release();
 			dilate(masks_warped[img_idx], dilated_mask, Mat());
 			resize(dilated_mask, seam_mask, mask_warped.size(), 0, 0, INTER_LINEAR_EXACT);
 			mask_warped = seam_mask & mask_warped;
 
-			if(k == 0) {
-				if (!blender && !timelapse)
+			if (!blender && !timelapse)
+			{
+				//blending
+				blender = Blender::createDefault(blend_type, try_cuda);
+				Size dst_sz = resultRoi(corners, sizes).size();
+				float blend_width = sqrt(static_cast<float>(dst_sz.area())) * blend_strength / 100.f;
+				if (blend_width < 1.f)
+					blender = Blender::createDefault(Blender::NO, try_cuda);
+				else if (blend_type == Blender::MULTI_BAND)
 				{
-					blender = Blender::createDefault(blend_type, try_cuda);
-					Size dst_sz = resultRoi(corners, sizes).size();
-					float blend_width = sqrt(static_cast<float>(dst_sz.area())) * blend_strength / 100.f;
-					if (blend_width < 1.f)
-						blender = Blender::createDefault(Blender::NO, try_cuda);
-					else if (blend_type == Blender::MULTI_BAND)
-					{
-						MultiBandBlender* mb = dynamic_cast<MultiBandBlender*>(blender.get());
-						mb->setNumBands(static_cast<int>(ceil(log(blend_width)/log(2.)) - 1.));
-						LOGLN("Multi-band blender, number of bands: " << mb->numBands());
-					}
-					else if (blend_type == Blender::FEATHER)
-					{
-						FeatherBlender* fb = dynamic_cast<FeatherBlender*>(blender.get());
-						fb->setSharpness(1.f/blend_width);
-						LOGLN("Feather blender, sharpness: " << fb->sharpness());
-					}
-					blender->prepare(corners, sizes);
+					MultiBandBlender* mb = dynamic_cast<MultiBandBlender*>(blender.get());
+					mb->setNumBands(static_cast<int>(ceil(log(blend_width)/log(2.)) - 1.));
+					LOGLN("Multi-band blender, number of bands: " << mb->numBands());
 				}
-				else if (!timelapser && timelapse)
+				else if (blend_type == Blender::FEATHER)
 				{
-					timelapser = Timelapser::createDefault(timelapse_type);
-					timelapser->initialize(corners, sizes);
+					FeatherBlender* fb = dynamic_cast<FeatherBlender*>(blender.get());
+					fb->setSharpness(1.f/blend_width);
+					LOGLN("Feather blender, sharpness: " << fb->sharpness());
 				}
-				// Blend the current image
-				blender->feed(img_warped_s, mask_warped, corners[img_idx]);
+				blender->prepare(corners, sizes);
 			}
+			blender->feed(img_warped_s, mask_warped, corners[img_idx]);
+			//is_compose_scale_set = false;
 		}
+
 		if (!timelapse)
 		{
 			Mat result, result_mask;
 			blender->blend(result, result_mask);
-			LOGLN("Compositing, time: " << ((getTickCount() - t) / getTickFrequency()) << " sec");
+			//LOGLN("Compositing, time: " << ((getTickCount() - t) / getTickFrequency()) << " sec");
 			imwrite(result_name, result);
-		//	imshow(result_name, result);
-		//	waitKey(30);
+			/*Mat result_8u;
+			if (result.depth() != CV_8U)
+			{
+				result.convertTo(result_8u, CV_8U);  // simple scale, might clip
+			}
+			else
+			{
+				result_8u = result;
+			}
+
+			writer.write(result_8u);
+*/
+			//writer.write(result);
+			imshow(result_name, result);
+			waitKey(30);
 		}
-	LOGLN("Finished, total time: " << ((getTickCount() - app_start_time) / getTickFrequency()) << " sec");
+		cout << "################################## itit" << endl; 
+		//LOGLN("Finished, total time: " << ((getTickCount() - app_start_time) / getTickFrequency()) << " sec");
 	}
+	writer.release();
 	return 0;
 }
