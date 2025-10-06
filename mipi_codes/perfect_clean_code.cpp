@@ -178,6 +178,7 @@ int main(int argc, char* argv[])
 		return -1;
 	}
 
+	//Informs opencv to not perform color conversion by default
 	cap1.set(CAP_PROP_CONVERT_RGB,0); 
 	cap2.set(CAP_PROP_CONVERT_RGB,0); 
 
@@ -219,6 +220,8 @@ int main(int argc, char* argv[])
 		cap2 >> frame2;
 
 		flag+=1;
+
+		//Brightness Compensator
 		if (flag == 1) { 
 			std::system("v4l2-ctl -d /dev/video0 -c analogue_gain=800"); 
 			//std::system("v4l2-ctl -d /dev/video0 --all"); 
@@ -228,9 +231,11 @@ int main(int argc, char* argv[])
 				cap2  >> frame2; 
 			} 
 		} 
+		
 		resize(frame1, frame1, target_size, 0, 0,INTER_LINEAR);
 		resize(frame2, frame2, target_size, 0, 0,INTER_LINEAR);
-
+		
+		//Conversion from 10-bit Bayer input to 8-bit BGR
 		cv::convertScaleAbs(frame1, frame1, 0.25, 0);
 		cv::convertScaleAbs(frame2, frame2, 0.25, 0);
 		cv::cvtColor(frame1, frame1, cv::COLOR_BayerGR2BGR);
@@ -298,13 +303,14 @@ int main(int argc, char* argv[])
 			(*matcher)(features, pairwise_matches);
 			matcher->collectGarbage();
 			estimator = makePtr<HomographyBasedEstimator>();
-
+			
+			//estimating camera matrix parameter -> intrinsic + extrinsic parameters
 			if (!(*estimator)(features, pairwise_matches, cameras))
 			{
 				cout << "Homography estimation failed.\n";
 				return -1;
 			}
-
+			//matrix parameter conversion from double to float
 			for (size_t i = 0; i < cameras.size(); ++i)
 			{
 				Mat R;
@@ -312,6 +318,8 @@ int main(int argc, char* argv[])
 				cameras[i].R = R;
 			}
 
+			//optimize cam matrix value to reduce geometric error
+			//raybundleadjustment technique is used
 			adjuster = makePtr<detail::BundleAdjusterRay>();
 			adjuster->setConfThresh(conf_thresh);
 
@@ -352,6 +360,7 @@ int main(int argc, char* argv[])
 			for (size_t i = 0; i < cameras.size(); ++i)
 				cameras[i].R = rmats[i];
 
+			//creating masks for all images
 			for (int i = 0; i < num_images; ++i)
 			{
 				masks[i].create(images[i].size(), CV_8U);
@@ -368,12 +377,14 @@ int main(int argc, char* argv[])
 				cout << "Can't create the following warper '" << warp_type << "'\n";
 				return 1;
 			}
+			
 			seam_finder = makePtr<detail::GraphCutSeamFinder>(GraphCutSeamFinderBase::COST_COLOR);
 			if (!seam_finder)
 			{
 				cout << "Can't create the following seam finder '" << seam_find_type << "'\n";
 				return 1;
 			}
+			//exposure compensator init
 			warper = warper_creator->create(static_cast<float>(warped_image_scale * seam_work_aspect));
 			compensator = ExposureCompensator::createDefault(expos_comp_type);
 
@@ -400,6 +411,7 @@ int main(int argc, char* argv[])
 			fg = 0;
 		}
 
+		//warping
 		for (int i = 0; i < num_images; ++i)
 		{
 
