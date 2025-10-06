@@ -1,6 +1,8 @@
 #include <iostream>
+#include <unistd.h>
 #include <fstream>
 #include <string>
+#include <omp.h>
 #include "opencv2/opencv_modules.hpp"
 #include <opencv2/core/utility.hpp>
 #include "opencv2/imgcodecs.hpp"
@@ -55,6 +57,7 @@ int expos_comp_nr_feeds = 1;
 int expos_comp_nr_filtering = 2;
 int expos_comp_block_size = 32;
 string seam_find_type = "gc_color";
+//int blend_type;
 int blend_type = Blender::MULTI_BAND;
 int timelapse_type = Timelapser::AS_IS;
 float blend_strength = 5;
@@ -317,54 +320,78 @@ static int parseCmdArgs(int argc, char** argv)
 
 int main(int argc, char* argv[])
 {
-
-	VideoWriter writer("stitched_output.mkv",
-			VideoWriter::fourcc('X','2','6','4'), // codec
-			30,                                  // FPS
-			Size(640, 480));                   
-
-	if (!writer.isOpened()) {
-		std::cerr << "Could not open the output video file for write\n";
-		return -1;
-	}
-
-	int fg = 0; 
+	int fg = 1; 
 	int bg = 1; 
-	int sg = 1; 
+	int sg = 1;
 
+	omp_set_num_threads(4); 
 	int retval = parseCmdArgs(argc, argv);
 	if (retval)
 		return retval;
-	
-	VideoCapture cap1("/home/devashree-katarkar/Downloads/left.mkv");
-	VideoCapture cap2("/home/devashree-katarkar/Downloads/right.mkv");
 
-	if (!cap1.isOpened() || !cap2.isOpened()) {
+	//int nn = (ceil(log(blend_width)/log(2.)) - 1.);
+	//cout << "nn val" << nn << endl;
+	/* Set the video Node for webcam
+	 * set its properties ,i.e., Width, Height, Frame rate and color format
+	 */
+	//VideoCapture cap1("/home/devashree-katarkar/camera1_output_first.mkv");
+	//VideoCapture cap2("/home/devashree-katarkar/camera2_output_first.mkv");
+
+	VideoCapture cap1(2, CAP_V4L2);
+	VideoCapture cap2(0, CAP_V4L2);
+	//std::cout << "Backend used: " << cap1.getBackendName() << std::endl;
+	//std::cout << "Backend used: " << cap2.getBackendName() << std::endl;
+	//return 0;
+	cap1.set(CAP_PROP_FRAME_WIDTH, 640);
+	cap1.set(CAP_PROP_FRAME_HEIGHT, 480);
+	cap1.set(CAP_PROP_FPS, 30);
+	cap1.set(cv::CAP_PROP_FOURCC, VideoWriter::fourcc('M','J','P','G'));
+	//cap1.set(cv::CAP_PROP_FOURCC, VideoWriter::fourcc('Y','U','Y','V'));
+
+	cap2.set(CAP_PROP_FRAME_WIDTH, 640);
+	cap2.set(CAP_PROP_FRAME_HEIGHT, 480);
+	cap2.set(CAP_PROP_FPS,30);
+	cap2.set(cv::CAP_PROP_FOURCC, VideoWriter::fourcc('M','J','P','G'));
+	//cap2.set(cv::CAP_PROP_FOURCC, VideoWriter::fourcc('Y','U','Y','V'));
+
+	//cap1.set(cv::CAP_PROP_FOURCC, VideoWriter::fourcc('M','J','P','G'));
+	//cap2.set(cv::CAP_PROP_FOURCC, VideoWriter::fourcc('M','J','P','G'));
+
+	if (!cap1.isOpened() || !cap2.isOpened()){
 		cerr << "Error: Could not open video files" << endl;
 		return -1;
 	}
 
-#if ENABLE_LOG
-	int64 t = getTickCount();
-#endif
-	vector<int> indices;
+	//sleep(5);
+	//Work scale value and flag are primarily used for resizing the frame for feature point detection
+	//Seam scale value and flag are used for downscaling the image for faster processing.
 
-	while(1){
-
-	Mat frame1, frame2;
-
-	cap1 >> frame1;
-	cap2 >> frame2;
-
-	if (frame1.empty() || frame2.empty()) return 0;
-
-	std::vector<Mat> frames = {frame1, frame2};
+	double seam_work_aspect    = 1;
+	double compose_work_aspect = 1;
 
 	double work_scale = 1, seam_scale = 1, compose_scale = 1;
 	bool is_work_scale_set = false, is_seam_scale_set = false, is_compose_scale_set = false;
-	LOGLN("Finding features...");
 
-	// Using SIFT finder
+	VideoWriter writer;
+	Mat frame1, frame2;
+
+	vector<UMat> masks_warped(num_images);
+	vector<UMat> images_warped(num_images);
+	vector<Size> sizes(num_images);
+	vector<UMat> masks(num_images);
+	vector<UMat> images_warped_f(num_images);
+	vector<Point> corners(num_images);
+	Ptr<RotationWarper> warper; 
+
+	Size dst_sz;
+	float blend_width;
+	MultiBandBlender* mb;
+	FeatherBlender* fb;
+
+	Size target_size(320, 240);
+	int count = 0;
+
+	//Using SIFT finder
 	Ptr<Feature2D> finder;
 	finder = SIFT::create();
 
@@ -372,172 +399,176 @@ int main(int argc, char* argv[])
 	vector<ImageFeatures> features(num_images);
 	vector<Mat> images(num_images);
 	vector<Size> full_img_sizes(num_images);
-	double seam_work_aspect = 1;
+	//sleep(5);
 
-	for (int i = 0; i < num_images; ++i)
-	{
-		//full_img = imread(samples::findFile(img_names[i]));
-		full_img = frames[i];
-		full_img_sizes[i] = full_img.size();
+	Mat_<float> K;
 
-		if (full_img.empty())
-		{
-			LOGLN("Can't open image " << img_names[i]);
-			return -1;
-		}
+	while(1){
 
-		if (work_megapix < 0)
+		cap1 >> frame1;
+		cap2 >> frame2;
+/*
+		int targetWidth  = 960;  // Change this to your desired width
+		int targetHeight = 300; // Change this to your desired height
+
+		// Define the cropping region (for example, starting from (100, 50) and cropping to (500, 350))
+		int cropX = 0;
+		int cropY = 300;
+		int cropWidth = targetWidth;  // You can adjust the width of the cropped area
+		int cropHeight = targetHeight; // You can adjust the height of the cropped area
+
+		// Define the region of interest (ROI) based on the target resolution
+		Rect cropRegion(cropX, cropY, cropWidth, cropHeight);
+
+		// Crop the image (extract the region of interest)
+		frame1 = frame1(cropRegion);
+		frame2 = frame2(cropRegion);
+*/
+		//resize(frame1, frame1, target_size, 0, 0,INTER_LINEAR);
+		//resize(frame2, frame2, target_size, 0, 0,INTER_LINEAR);
+
+		if (frame1.empty() || frame2.empty()) return 0;
+
+		vector<Mat> frames = {frame1, frame2};
+
+		for (int i = 0; i < num_images && (count == 0); ++i)
 		{
-			img = full_img;
-			work_scale = 1;
-			is_work_scale_set = true;
-		}
-		else
-		{
+
+			full_img = frames[i];
+			full_img_sizes[i] = full_img.size();
+
+			if (full_img.empty())
+			{
+				LOGLN("Can't open image " << img_names[i]);
+				return -1;
+			}
+
 			if (!is_work_scale_set)
 			{
 				work_scale = min(1.0, sqrt(work_megapix * 1e6 / full_img.size().area()));
 				is_work_scale_set = true;
 			}
+
+			//resize(full_img, img, target_size, 0, 0, INTER_LINEAR_EXACT);
+			//Work scale resizing is done for feature detection and matching
 			resize(full_img, img, Size(), work_scale, work_scale, INTER_LINEAR_EXACT);
+
+			if (!is_seam_scale_set)
+			{
+				seam_scale = min(1.0, sqrt(seam_megapix * 1e6 / full_img.size().area()));
+				seam_work_aspect = seam_scale / work_scale;
+				is_seam_scale_set = true;
+			}
+
+			computeImageFeatures(finder, img, features[i]);
+			features[i].img_idx = i;
+			//LOGLN("Features in image #" << i+1 << ": " << features[i].keypoints.size());
+			//Seam scale resizing is for seam_find 
+			resize(full_img, img, Size(), seam_scale, seam_scale, INTER_LINEAR_EXACT);
+			//resize(full_img, img, target_size, 0, 0, INTER_LINEAR_EXACT);
+			images[i] = img.clone();
 		}
-		if (!is_seam_scale_set)
+
+		for (int i = 0; i < num_images && ((count) != 0); ++i)
 		{
-			seam_scale = min(1.0, sqrt(seam_megapix * 1e6 / full_img.size().area()));
-			seam_work_aspect = seam_scale / work_scale;
-			is_seam_scale_set = true;
+			Mat seam_img;
+			resize(frames[i], seam_img, Size(), seam_scale, seam_scale, INTER_LINEAR_EXACT);
+			images[i] = seam_img.clone();
 		}
 
-		computeImageFeatures(finder, img, features[i]);
-		features[i].img_idx = i;
-		LOGLN("Features in image #" << i+1 << ": " << features[i].keypoints.size());
-		resize(full_img, img, Size(), seam_scale, seam_scale, INTER_LINEAR_EXACT);
-		images[i] = img.clone();
-	}
+		if(fg == 1){
 
-	LOGLN("Finding features, time: " << ((getTickCount() - t) / getTickFrequency()) << " sec");
-	LOG("Pairwise matching");
+			matcher = makePtr<BestOf2NearestMatcher>(try_cuda, match_conf);
+			(*matcher)(features, pairwise_matches);
 
-#if ENABLE_LOG
-	t = getTickCount();
-#endif
+			//frees internal memory after matching
+			matcher->collectGarbage();
+			estimator = makePtr<HomographyBasedEstimator>();
 
-	//if(bg){
-		matcher = makePtr<BestOf2NearestMatcher>(try_cuda, match_conf);
-		(*matcher)(features, pairwise_matches);
-		matcher->collectGarbage();
+			if (!(*estimator)(features, pairwise_matches, cameras))
+			{
+				cout << "Homography estimation failed.\n";
+				return -1;
+			}
 
-		LOGLN("Pairwise matching, time: " << ((getTickCount() - t) / getTickFrequency()) << " sec");
-		
-		indices = leaveBiggestComponent(features, pairwise_matches, conf_thresh);
-		estimator = makePtr<HomographyBasedEstimator>();
+			for (size_t i = 0; i < cameras.size(); ++i)
+			{
+				Mat R;
+				cameras[i].R.convertTo(R, CV_32F);
+				cameras[i].R = R;
+			}
 
-		if (!(*estimator)(features, pairwise_matches, cameras))
-		{
-			cout << "Homography estimation failed.\n";
-			return -1;
-		}
-		
-		for (size_t i = 0; i < cameras.size(); ++i)
-		{
-			Mat R;
-			cameras[i].R.convertTo(R, CV_32F);
-			cameras[i].R = R;
-			LOGLN("Initial camera intrinsics #" << indices[i]+1 << ":\nK:\n" << cameras[i].K() << "\nR:\n" << cameras[i].R);
-		}
+			adjuster = makePtr<detail::BundleAdjusterRay>();
+			adjuster->setConfThresh(conf_thresh);
 
-		adjuster = makePtr<detail::BundleAdjusterRay>();
-		adjuster->setConfThresh(conf_thresh);
+			Mat_<uchar> refine_mask = Mat::zeros(3, 3, CV_8U);
+			if (ba_refine_mask[0] == 'x') refine_mask(0,0) = 1;
+			if (ba_refine_mask[1] == 'x') refine_mask(0,1) = 1;
+			if (ba_refine_mask[2] == 'x') refine_mask(0,2) = 1;
+			if (ba_refine_mask[3] == 'x') refine_mask(1,1) = 1;
+			if (ba_refine_mask[4] == 'x') refine_mask(1,2) = 1;
 
-		Mat_<uchar> refine_mask = Mat::zeros(3, 3, CV_8U);
-		if (ba_refine_mask[0] == 'x') refine_mask(0,0) = 1;
-		if (ba_refine_mask[1] == 'x') refine_mask(0,1) = 1;
-		if (ba_refine_mask[2] == 'x') refine_mask(0,2) = 1;
-		if (ba_refine_mask[3] == 'x') refine_mask(1,1) = 1;
-		if (ba_refine_mask[4] == 'x') refine_mask(1,2) = 1;
-		
-		adjuster->setRefinementMask(refine_mask);
-		
-		if (!(*adjuster)(features, pairwise_matches, cameras))
-		{
-			cout << "Camera parameters adjusting failed.\n";
-			return -1;
-		}
+			adjuster->setRefinementMask(refine_mask);
 
-		// Find median focal length
-		for (size_t i = 0; i < cameras.size(); ++i)
-		{
-			LOGLN("Camera #" << indices[i]+1 << ":\nK:\n" << cameras[i].K() << "\nR:\n" << cameras[i].R);
-			focals.push_back(cameras[i].focal);
-		}
-		
-		sort(focals.begin(), focals.end());
-		
-		if (focals.size() % 2 == 1)
-			warped_image_scale = static_cast<float>(focals[focals.size() / 2]);
-		else
-			warped_image_scale = static_cast<float>(focals[focals.size() / 2 - 1] + focals[focals.size() / 2]) * 0.5f;
+			if (!(*adjuster)(features, pairwise_matches, cameras))
+			{
+				cout << "Camera parameters adjusting failed.\n";
+				return -1;
+			}
 
-		LOGLN("Warping images (auxiliary)... ");
-#if ENABLE_LOG
-		t = getTickCount();
-#endif
-		bg = 0;
-		
-		vector<Point> corners(num_images);
-		vector<UMat> masks_warped(num_images);
-		vector<UMat> images_warped(num_images);
-		vector<Size> sizes(num_images);
-		vector<UMat> masks(num_images);
+			// Find median focal length
+			for (size_t i = 0; i < cameras.size(); ++i)
+			{
+				focals.push_back(cameras[i].focal);
+			}
 
-		// Prepare images masks
-		for (int i = 0; i < num_images; ++i)
-		{
-			masks[i].create(images[i].size(), CV_8U);
-			masks[i].setTo(Scalar::all(255));
-		}
+			sort(focals.begin(), focals.end());
 
-		// Warp images and their masks
-		warper_creator = makePtr<cv::SphericalWarper>();
+			if (focals.size() % 2 == 1)
+				warped_image_scale = static_cast<float>(focals[focals.size() / 2]);
+			else
+				warped_image_scale = static_cast<float>(focals[focals.size() / 2 - 1] + focals[focals.size() / 2]) * 0.5f;
 
-		if (!warper_creator)
-		{
-			cout << "Can't create the following warper '" << warp_type << "'\n";
-			return 1;
-		}
 
-		Ptr<RotationWarper> warper = warper_creator->create(static_cast<float>(warped_image_scale * seam_work_aspect));
-		for (int i = 0; i < num_images; ++i)
-		{
-			Mat_<float> K;
-			cameras[i].K().convertTo(K, CV_32F);
-			float swa = (float)seam_work_aspect;
-			K(0,0) *= swa; K(0,2) *= swa;
-			K(1,1) *= swa; K(1,2) *= swa;
-			corners[i] = warper->warp(images[i], K, cameras[i].R, INTER_LINEAR, BORDER_REFLECT, images_warped[i]);
-			sizes[i] = images_warped[i].size();
-			warper->warp(masks[i], K, cameras[i].R, INTER_NEAREST, BORDER_CONSTANT, masks_warped[i]);
-		}
-		vector<UMat> images_warped_f(num_images);
-		for (int i = 0; i < num_images; ++i)
-			images_warped[i].convertTo(images_warped_f[i], CV_32F);
-		LOGLN("Warping images, time: " << ((getTickCount() - t) / getTickFrequency()) << " sec");
-		LOGLN("Compensating exposure...");
-#if ENABLE_LOG
-		t = getTickCount();
-#endif
-		//if(sg){
+			for (int i = 0; i < num_images; ++i)
+			{
+				masks[i].create(images[i].size(), CV_8U);
+				masks[i].setTo(Scalar::all(255));
+			}
+
+			//For warping frames onto one another spericalwarper is required to give wide panoramic view
+			//Also coordinates used are sperical coordinates
+
+			warper_creator = makePtr<cv::SphericalWarper>();
+			if (!warper_creator)
+			{
+				cout << "Can't create the following warper '" << warp_type << "'\n";
+				return 1;
+			}
+
+			seam_finder = makePtr<detail::GraphCutSeamFinder>(GraphCutSeamFinderBase::COST_COLOR);
+			if (!seam_finder)
+			{
+				cout << "Can't create the following seam finder '" << seam_find_type << "'\n";
+				return 1;
+			}
+
+			warper = warper_creator->create(static_cast<float>(warped_image_scale * seam_work_aspect));
+
 			compensator = ExposureCompensator::createDefault(expos_comp_type);
+
 			if (dynamic_cast<GainCompensator*>(compensator.get()))
 			{
 				GainCompensator* gcompensator = dynamic_cast<GainCompensator*>(compensator.get());
 				gcompensator->setNrFeeds(expos_comp_nr_feeds);
 			}
+
 			if (dynamic_cast<ChannelsCompensator*>(compensator.get()))
 			{
 				ChannelsCompensator* ccompensator = dynamic_cast<ChannelsCompensator*>(compensator.get());
 				ccompensator->setNrFeeds(expos_comp_nr_feeds);
 			}
+
 			if (dynamic_cast<BlocksCompensator*>(compensator.get()))
 			{
 				BlocksCompensator* bcompensator = dynamic_cast<BlocksCompensator*>(compensator.get());
@@ -545,72 +576,70 @@ int main(int argc, char* argv[])
 				bcompensator->setNrGainsFilteringIterations(expos_comp_nr_filtering);
 				bcompensator->setBlockSize(expos_comp_block_size, expos_comp_block_size);
 			}
-	//	}
-		compensator->feed(corners, images_warped, masks_warped);
-		//LOGLN("Compensating exposure, time: " << ((getTickCount() - t) / getTickFrequency()) << " sec");
-		//LOGLN("Finding seams...");
-		
-	//	if(sg){
-			if (seam_find_type == "no")
-				seam_finder = makePtr<detail::NoSeamFinder>();
-			else if (seam_find_type == "voronoi")
-				seam_finder = makePtr<detail::VoronoiSeamFinder>();
-			else if (seam_find_type == "gc_color")
-				seam_finder = makePtr<detail::GraphCutSeamFinder>(GraphCutSeamFinderBase::COST_COLOR);
-			else if (seam_find_type == "gc_colorgrad")
-				seam_finder = makePtr<detail::GraphCutSeamFinder>(GraphCutSeamFinderBase::COST_COLOR_GRAD);
-			else if (seam_find_type == "dp_color")
-				seam_finder = makePtr<detail::DpSeamFinder>(DpSeamFinder::COLOR);
-			else if (seam_find_type == "dp_colorgrad")
-				seam_finder = makePtr<detail::DpSeamFinder>(DpSeamFinder::COLOR_GRAD);
-			if (!seam_finder)
-			{
-				cout << "Can't create the following seam finder '" << seam_find_type << "'\n";
-				return 1;
-			}
-			sg = 0;
-	//	}
 
+
+			fg = 0;
+		}
+
+		//warping
+		for (int i = 0; i < num_images; ++i)
+		{
+
+			if (count == 0){
+				masks[i].setTo(Scalar::all(255));
+
+				cameras[i].K().convertTo(K, CV_32F);
+				float swa = (float)seam_work_aspect;
+				K(0,0) *= swa; K(0,2) *= swa;
+				K(1,1) *= swa; K(1,2) *= swa;
+
+				corners[i] = warper->warp(images[i], K, cameras[i].R, INTER_LINEAR, BORDER_REFLECT, images_warped[i]);
+				sizes[i] = images_warped[i].size();
+				warper->warp(masks[i], K, cameras[i].R, INTER_NEAREST, BORDER_CONSTANT, masks_warped[i]);
+
+			}
+		}
+
+		for (int i = 0; i < num_images; ++i)
+			images_warped[i].convertTo(images_warped_f[i], CV_32F);
+
+		compensator->feed(corners, images_warped, masks_warped);
 		seam_finder->find(images_warped_f, corners, masks_warped);
-		LOGLN("Finding seams, time: " << ((getTickCount() - t) / getTickFrequency()) << " sec");
-		// Release unused memory
-		images.clear();
-		images_warped.clear();
-		images_warped_f.clear();
-		masks.clear();
-		LOGLN("Compositing...");
-		
+
+		int a  = 0;
 
 		Mat img_warped, img_warped_s;
 		Mat dilated_mask, seam_mask, mask, mask_warped;
 		Ptr<Blender> blender;
 		Ptr<Timelapser> timelapser;
-		//double compose_seam_aspect = 1;
-		double compose_work_aspect = 1;
+
 		for (int img_idx = 0; img_idx < num_images; ++img_idx)
 		{
-			LOGLN("Compositing image #" << indices[img_idx]+1);
-			// Read image and resize it if necessary
-			//full_img = imread(samples::findFile(img_names[img_idx]));
-			full_img = frames[img_idx];
+			full_img = frames[a++];
+
 			if (!is_compose_scale_set)
 			{
+
 				if (compose_megapix > 0)
 					compose_scale = min(1.0, sqrt(compose_megapix * 1e6 / full_img.size().area()));
 				is_compose_scale_set = true;
-				// Compute relative scales
-				//compose_seam_aspect = compose_scale / seam_scale;
+
+				//Compute relative scales
+				//Compose_seam_aspect = compose_scale / seam_scale;
 				compose_work_aspect = compose_scale / work_scale;
-				// Update warped image scale
+
+				//Update warped image scale
 				warped_image_scale *= static_cast<float>(compose_work_aspect);
 				warper = warper_creator->create(warped_image_scale);
-				// Update corners and sizes
+
+				//Update corners and sizes
 				for (int i = 0; i < num_images; ++i)
 				{
 					// Update intrinsics
 					cameras[i].focal *= compose_work_aspect;
 					cameras[i].ppx *= compose_work_aspect;
 					cameras[i].ppy *= compose_work_aspect;
+
 					// Update corner and size
 					Size sz = full_img_sizes[i];
 					if (std::abs(compose_scale - 1) > 1e-1)
@@ -625,81 +654,93 @@ int main(int argc, char* argv[])
 					sizes[i] = roi.size();
 				}
 			}
+
 			if (abs(compose_scale - 1) > 1e-1)
 				resize(full_img, img, Size(), compose_scale, compose_scale, INTER_LINEAR_EXACT);
 			else
 				img = full_img;
+
 			full_img.release();
 			Size img_size = img.size();
 			Mat K;
 			cameras[img_idx].K().convertTo(K, CV_32F);
-			// Warp the current image
+
+			//Warp the current image
 			warper->warp(img, K, cameras[img_idx].R, INTER_LINEAR, BORDER_REFLECT, img_warped);
-			// Warp the current image mask
+
+			//Warp the current image mask
 			mask.create(img_size, CV_8U);
 			mask.setTo(Scalar::all(255));
 			warper->warp(mask, K, cameras[img_idx].R, INTER_NEAREST, BORDER_CONSTANT, mask_warped);
-			// Compensate exposure
+
+			//Compensate exposure
 			compensator->apply(img_idx, corners[img_idx], img_warped, mask_warped);
 			img_warped.convertTo(img_warped_s, CV_16S);
+
+			//Compensate exposure
 			img_warped.release();
-			img.release();
+			full_img.release();
 			mask.release();
 			dilate(masks_warped[img_idx], dilated_mask, Mat());
 			resize(dilated_mask, seam_mask, mask_warped.size(), 0, 0, INTER_LINEAR_EXACT);
 			mask_warped = seam_mask & mask_warped;
 
+			//Compensate exposure
 			if (!blender && !timelapse)
 			{
-				//blending
 				blender = Blender::createDefault(blend_type, try_cuda);
-				Size dst_sz = resultRoi(corners, sizes).size();
-				float blend_width = sqrt(static_cast<float>(dst_sz.area())) * blend_strength / 100.f;
-				if (blend_width < 1.f)
-					blender = Blender::createDefault(Blender::NO, try_cuda);
-				else if (blend_type == Blender::MULTI_BAND)
-				{
-					MultiBandBlender* mb = dynamic_cast<MultiBandBlender*>(blender.get());
-					mb->setNumBands(static_cast<int>(ceil(log(blend_width)/log(2.)) - 1.));
-					LOGLN("Multi-band blender, number of bands: " << mb->numBands());
-				}
-				else if (blend_type == Blender::FEATHER)
-				{
-					FeatherBlender* fb = dynamic_cast<FeatherBlender*>(blender.get());
-					fb->setSharpness(1.f/blend_width);
-					LOGLN("Feather blender, sharpness: " << fb->sharpness());
-				}
+				dst_sz = resultRoi(corners, sizes).size();
+				blend_width = sqrt(static_cast<float>(dst_sz.area())) * blend_strength / 100.f;
+
+				mb = dynamic_cast<MultiBandBlender*>(blender.get());
+				mb->setNumBands(static_cast<int>(ceil(log(blend_width)/log(2.)) - 1.));
+				//LOGLN("Multi-band blender, number of bands: " << mb->numBands());
+
 				blender->prepare(corners, sizes);
 			}
+
 			blender->feed(img_warped_s, mask_warped, corners[img_idx]);
-			//is_compose_scale_set = false;
 		}
 
-		if (!timelapse)
-		{
-			Mat result, result_mask;
-			blender->blend(result, result_mask);
-			//LOGLN("Compositing, time: " << ((getTickCount() - t) / getTickFrequency()) << " sec");
-			imwrite(result_name, result);
-			/*Mat result_8u;
-			if (result.depth() != CV_8U)
-			{
-				result.convertTo(result_8u, CV_8U);  // simple scale, might clip
+		if (sg){
+			writer.open("output.avi",
+					cv::VideoWriter::fourcc('M', 'J', 'P', 'G'), // MJPEG codec
+					30,                                       // FPS
+					dst_sz);                                  // Size of the video frames
+			if (!writer.isOpened()) {
+				std::cerr << "Error: Could not open the output video file!" << std::endl;
+				return -1;
 			}
-			else
-			{
-				result_8u = result;
-			}
-
-			writer.write(result_8u);
-*/
-			//writer.write(result);
-			imshow(result_name, result);
-			waitKey(30);
+			sg = 0;
 		}
-		cout << "################################## itit" << endl; 
-		//LOGLN("Finished, total time: " << ((getTickCount() - app_start_time) / getTickFrequency()) << " sec");
+
+		Mat result, result_mask;
+		blender->blend(result, result_mask);
+		imwrite(result_name, result);
+		Mat result_8u;
+
+		if (result.depth() != CV_8U)
+			result.convertTo(result_8u, CV_8U);  // simple scale, might clip
+		else
+			result_8u = result;
+
+		count++;
+		writer.write(result_8u);
+		imshow("Stitched Video", result_8u);
+		
+		//waitKey(1);   
+		if (waitKey(1) == 27) { // ESC key
+			cout << "ESC pressed. Exiting..." << endl;
+			break;
+		}
+
 	}
+
+	images.clear();
+	images_warped.clear();
+	images_warped_f.clear();
+	masks.clear();
+
 	writer.release();
 	return 0;
 }

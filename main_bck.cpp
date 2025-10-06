@@ -353,21 +353,42 @@ int main(int argc, char* argv[])
 	vector<Mat> images(num_images);
 	vector<Size> full_img_sizes(num_images);
 	double seam_work_aspect = 1;
+
 	for (int i = 0; i < num_images; ++i)
 	{
 		full_img = imread(samples::findFile(img_names[i]));
+
+		int targetWidth  = 960;  // Change this to your desired width
+		int targetHeight = 400;  // Change this to your desired height
+
+		// Define the cropping region (for example, starting from (100, 50) and cropping to (500, 350))
+		int cropX = 0;
+		int cropY = 200;
+		int cropWidth = targetWidth;   // You can adjust the width of the cropped area
+		int cropHeight = targetHeight; // You can adjust the height of the cropped area
+
+		// Define the region of interest (ROI) based on the target resolution
+		Rect cropRegion(cropX, cropY, cropWidth, cropHeight);
+
+		// Crop the image (extract the region of interest)
+		full_img = full_img(cropRegion);
+		imwrite("tm.jpg",full_img);
 		full_img_sizes[i] = full_img.size();
+
 		if (full_img.empty())
 		{
 			LOGLN("Can't open image " << img_names[i]);
 			return -1;
 		}
+
 		if (work_megapix < 0)
 		{
+			cout << " work megapix less than zero " << endl;
 			img = full_img;
 			work_scale = 1;
 			is_work_scale_set = true;
 		}
+
 		else
 		{
 			if (!is_work_scale_set)
@@ -377,22 +398,27 @@ int main(int argc, char* argv[])
 			}
 			resize(full_img, img, Size(), work_scale, work_scale, INTER_LINEAR_EXACT);
 		}
+
 		if (!is_seam_scale_set)
-		{
+		{	
+			cout << " seam scale set " << endl;
 			seam_scale = min(1.0, sqrt(seam_megapix * 1e6 / full_img.size().area()));
 			seam_work_aspect = seam_scale / work_scale;
 			is_seam_scale_set = true;
 		}
+
 		computeImageFeatures(finder, img, features[i]);
 		features[i].img_idx = i;
 		LOGLN("Features in image #" << i+1 << ": " << features[i].keypoints.size());
 		resize(full_img, img, Size(), seam_scale, seam_scale, INTER_LINEAR_EXACT);
 		images[i] = img.clone();
 	}
+
 	full_img.release();
 	img.release();
 	LOGLN("Finding features, time: " << ((getTickCount() - t) / getTickFrequency()) << " sec");
 	LOG("Pairwise matching");
+
 #if ENABLE_LOG
 	t = getTickCount();
 #endif
@@ -407,6 +433,7 @@ int main(int argc, char* argv[])
 	(*matcher)(features, pairwise_matches);
 	matcher->collectGarbage();
 	LOGLN("Pairwise matching, time: " << ((getTickCount() - t) / getTickFrequency()) << " sec");
+
 	// Check if we should save matches graph
 	if (save_graph)
 	{
@@ -414,6 +441,7 @@ int main(int argc, char* argv[])
 		ofstream f(save_graph_to.c_str());
 		f << matchesGraphAsString(img_names, pairwise_matches, conf_thresh);
 	}
+
 	// Leave only images we are sure are from the same panorama
 	vector<int> indices = leaveBiggestComponent(features, pairwise_matches, conf_thresh);
 	vector<Mat> img_subset;
@@ -428,6 +456,7 @@ int main(int argc, char* argv[])
 	images = img_subset;
 	img_names = img_names_subset;
 	full_img_sizes = full_img_sizes_subset;
+	
 	// Check if we still have enough images
 	num_images = static_cast<int>(img_names.size());
 	if (num_images < 2)
@@ -435,11 +464,13 @@ int main(int argc, char* argv[])
 		LOGLN("Need more images");
 		return -1;
 	}
+	
 	Ptr<Estimator> estimator;
 	if (estimator_type == "affine")
 		estimator = makePtr<AffineBasedEstimator>();
 	else
 		estimator = makePtr<HomographyBasedEstimator>();
+	
 	vector<CameraParams> cameras;
 	if (!(*estimator)(features, pairwise_matches, cameras))
 	{
@@ -453,6 +484,7 @@ int main(int argc, char* argv[])
 		cameras[i].R = R;
 		LOGLN("Initial camera intrinsics #" << indices[i]+1 << ":\nK:\n" << cameras[i].K() << "\nR:\n" << cameras[i].R);
 	}
+
 	Ptr<detail::BundleAdjusterBase> adjuster;
 	if (ba_cost_func == "reproj") adjuster = makePtr<detail::BundleAdjusterReproj>();
 	else if (ba_cost_func == "ray") adjuster = makePtr<detail::BundleAdjusterRay>();
@@ -724,8 +756,10 @@ int main(int argc, char* argv[])
 			blender = Blender::createDefault(blend_type, try_cuda);
 			Size dst_sz = resultRoi(corners, sizes).size();
 			float blend_width = sqrt(static_cast<float>(dst_sz.area())) * blend_strength / 100.f;
-			if (blend_width < 1.f)
+			if (blend_width < 1.f){
+				cout << " ///////////////////no " << endl; 
 				blender = Blender::createDefault(Blender::NO, try_cuda);
+			}
 			else if (blend_type == Blender::MULTI_BAND)
 			{
 				MultiBandBlender* mb = dynamic_cast<MultiBandBlender*>(blender.get());
@@ -740,6 +774,7 @@ int main(int argc, char* argv[])
 			}
 			blender->prepare(corners, sizes);
 			cout << " blend type " << endl;
+			
 		}
 		else if (!timelapser && timelapse)
 		{
