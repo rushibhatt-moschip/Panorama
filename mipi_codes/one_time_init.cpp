@@ -1,0 +1,1123 @@
+#include <iostream>
+#include <unistd.h>
+#include <fstream>
+#include <string>
+#include <omp.h>
+#include "opencv2/opencv_modules.hpp"
+#include <opencv2/core/utility.hpp>
+#include "opencv2/imgcodecs.hpp"
+#include "opencv2/highgui.hpp"
+#include "opencv2/stitching/detail/autocalib.hpp"
+#include "opencv2/stitching/detail/blenders.hpp"
+#include "opencv2/stitching/detail/timelapsers.hpp"
+#include "opencv2/stitching/detail/camera.hpp"
+#include "opencv2/stitching/detail/exposure_compensate.hpp"
+#include "opencv2/stitching/detail/matchers.hpp"
+#include "opencv2/stitching/detail/motion_estimators.hpp"
+#include "opencv2/stitching/detail/seam_finders.hpp"
+#include "opencv2/stitching/detail/warpers.hpp"
+#include "opencv2/stitching/warpers.hpp"
+
+#include <chrono>
+#include <thread>
+#include <cmath>
+#include <opencv2/cudawarping.hpp>
+
+#include <opencv2/opencv.hpp>
+#include <opencv2/core/cuda.hpp>
+
+
+#ifdef HAVE_OPENCV_XFEATURES2D
+#include "opencv2/xfeatures2d.hpp"
+#include "opencv2/xfeatures2d/nonfree.hpp"
+#endif
+#define ENABLE_LOG 1
+#define LOG(msg) std::cout << msg
+#define LOGLN(msg) std::cout << msg << std::endl
+using namespace std;
+using namespace cv;
+using namespace cv::detail;
+// Default command line args
+vector<String> img_names;
+bool preview = false;
+static int num_images = 2;
+bool try_cuda = false;
+double work_megapix = 0.2;
+double seam_megapix = 0.1;
+double compose_megapix = -1;
+float conf_thresh = 1.f;
+#ifdef HAVE_OPENCV_XFEATURES2D
+string features_type = "surf";
+float match_conf = 0.65f;
+#else
+string features_type = "orb";
+float match_conf = 0.3f;
+#endif
+string matcher_type = "homography";
+string estimator_type = "homography";
+string ba_cost_func = "ray";
+string ba_refine_mask = "xxxxx";
+bool do_wave_correct = true;
+WaveCorrectKind wave_correct = detail::WAVE_CORRECT_HORIZ;
+bool save_graph = false;
+std::string save_graph_to;
+string warp_type = "spherical";
+int expos_comp_type = ExposureCompensator::GAIN_BLOCKS;
+int expos_comp_nr_feeds = 1;
+int expos_comp_nr_filtering = 2;
+int expos_comp_block_size = 32;
+string seam_find_type = "gc_color";
+//int blend_type;
+//int blend_type = Blender::FEATHER;
+int blend_type = Blender::MULTI_BAND;
+int timelapse_type = Timelapser::AS_IS;
+float blend_strength = 5;
+string result_name = "result.jpg";
+bool timelapse = false;
+int range_width = -1;
+Ptr<WarperCreator> warper_creator;
+
+
+vector<MatchesInfo> pairwise_matches;
+Ptr<FeaturesMatcher> matcher;
+Ptr<Estimator> estimator;
+vector<CameraParams> cameras;
+Ptr<detail::BundleAdjusterBase> adjuster;
+vector<double> focals;
+float warped_image_scale;
+Ptr<SeamFinder> seam_finder;
+Ptr<ExposureCompensator> compensator; 
+
+using namespace std;
+using namespace std::chrono;
+
+// Helper lambda to compute & round duration in seconds
+auto duration_s = [](auto start, auto end, int decimals=3) {
+    double sec = duration<double>(end - start).count();
+    double factor = pow(10.0, decimals);
+    return round(sec * factor) / factor;
+};
+
+Mat auto_white_balance(const Mat& frame, int small_size = 50, double eps = 1e-6, double* gain_b_out = nullptr, double* gain_r_out = nullptr) {
+    // Downscale to small_size x small_size
+    Mat small;
+    resize(frame, small, Size(small_size, small_size), 0, 0, INTER_NEAREST);
+
+    // Compute mean per channel (B, G, R)
+    Scalar avg = mean(small);  // avg[0]=B, avg[1]=G, avg[2]=R
+
+    double avg_b = avg[0];
+    double avg_g = avg[1];
+    double avg_r = avg[2];
+
+    // Compute gains relative to green
+    double gain_b = avg_g / (avg_b + eps);
+    double gain_r = avg_g / (avg_r + eps);
+
+    if (gain_b_out) *gain_b_out = gain_b;
+    if (gain_r_out) *gain_r_out = gain_r;
+
+    // Convert to float for scaling
+    Mat frame_f;
+    frame.convertTo(frame_f, CV_32F);
+
+    // Apply gains
+    vector<Mat> channels;
+    split(frame_f, channels);
+    channels[0] *= gain_b;  // Blue
+    channels[2] *= gain_r;  // Red
+    merge(channels, frame_f);
+
+    // Clip back to 8-bit
+    Mat frame_out;
+    frame_f.convertTo(frame_out, CV_8U, 1.0, 0.0);
+
+    return frame_out;
+}
+
+
+
+
+
+static int parseCmdArgs(int argc, char** argv)
+{
+	if (argc == 1)
+	{
+		//printUsage(argv);
+		return -1;
+	}
+	for (int i = 1; i < argc; ++i)
+	{
+		if (string(argv[i]) == "--help" || string(argv[i]) == "/?")
+		{
+			//printUsage(argv);
+			return -1;
+		}
+		else if (string(argv[i]) == "--preview")
+		{
+			preview = true;
+		}
+		else if (string(argv[i]) == "--try_cuda")
+		{
+			if (string(argv[i + 1]) == "no")
+				try_cuda = false;
+			else if (string(argv[i + 1]) == "yes")
+				try_cuda = true;
+			else
+			{
+				cout << "Bad --try_cuda flag value\n";
+				return -1;
+			}
+			i++;
+		}
+		else if (string(argv[i]) == "--work_megapix")
+		{
+			work_megapix = atof(argv[i + 1]);
+			i++;
+		}
+		else if (string(argv[i]) == "--seam_megapix")
+		{
+			seam_megapix = atof(argv[i + 1]);
+			i++;
+		}
+		else if (string(argv[i]) == "--compose_megapix")
+		{
+			compose_megapix = atof(argv[i + 1]);
+			i++;
+		}
+		else if (string(argv[i]) == "--result")
+		{
+			result_name = argv[i + 1];
+			i++;
+		}
+		else if (string(argv[i]) == "--features")
+		{
+			features_type = argv[i + 1];
+			if (string(features_type) == "orb")
+				match_conf = 0.3f;
+			i++;
+		}
+		else if (string(argv[i]) == "--matcher")
+		{
+			if (string(argv[i + 1]) == "homography" || string(argv[i + 1]) == "affine")
+				matcher_type = argv[i + 1];
+			else
+			{
+				cout << "Bad --matcher flag value\n";
+				return -1;
+			}
+			i++;
+		}
+		else if (string(argv[i]) == "--estimator")
+		{
+			if (string(argv[i + 1]) == "homography" || string(argv[i + 1]) == "affine")
+				estimator_type = argv[i + 1];
+			else
+			{
+				cout << "Bad --estimator flag value\n";
+				return -1;
+			}
+			i++;
+		}
+		else if (string(argv[i]) == "--match_conf")
+		{
+			match_conf = static_cast<float>(atof(argv[i + 1]));
+			i++;
+		}
+		else if (string(argv[i]) == "--conf_thresh")
+		{
+			conf_thresh = static_cast<float>(atof(argv[i + 1]));
+			i++;
+		}
+		else if (string(argv[i]) == "--ba")
+		{
+			ba_cost_func = argv[i + 1];
+			i++;
+		}
+		else if (string(argv[i]) == "--ba_refine_mask")
+		{
+			ba_refine_mask = argv[i + 1];
+			if (ba_refine_mask.size() != 5)
+			{
+				cout << "Incorrect refinement mask length.\n";
+				return -1;
+			}
+			i++;
+		}
+		else if (string(argv[i]) == "--wave_correct")
+		{
+			if (string(argv[i + 1]) == "no")
+				do_wave_correct = false;
+			else if (string(argv[i + 1]) == "horiz")
+			{
+				do_wave_correct = true;
+				wave_correct = detail::WAVE_CORRECT_HORIZ;
+			}
+			else if (string(argv[i + 1]) == "vert")
+			{
+				do_wave_correct = true;
+				wave_correct = detail::WAVE_CORRECT_VERT;
+			}
+			else
+			{
+				cout << "Bad --wave_correct flag value\n";
+				return -1;
+			}
+			i++;
+		}
+		else if (string(argv[i]) == "--save_graph")
+		{
+			save_graph = true;
+			save_graph_to = argv[i + 1];
+			i++;
+		}
+		else if (string(argv[i]) == "--warp")
+		{
+			warp_type = string(argv[i + 1]);
+			i++;
+		}
+		else if (string(argv[i]) == "--expos_comp")
+		{
+			if (string(argv[i + 1]) == "no")
+				expos_comp_type = ExposureCompensator::NO;
+			else if (string(argv[i + 1]) == "gain")
+				expos_comp_type = ExposureCompensator::GAIN;
+			else if (string(argv[i + 1]) == "gain_blocks")
+				expos_comp_type = ExposureCompensator::GAIN_BLOCKS;
+			else if (string(argv[i + 1]) == "channels")
+				expos_comp_type = ExposureCompensator::CHANNELS;
+			else if (string(argv[i + 1]) == "channels_blocks")
+				expos_comp_type = ExposureCompensator::CHANNELS_BLOCKS;
+			else
+			{
+				cout << "Bad exposure compensation method\n";
+				return -1;
+			}
+			i++;
+		}
+		else if (string(argv[i]) == "--expos_comp_nr_feeds")
+		{
+			expos_comp_nr_feeds = atoi(argv[i + 1]);
+			i++;
+		}
+		else if (string(argv[i]) == "--expos_comp_nr_filtering")
+		{
+			expos_comp_nr_filtering = atoi(argv[i + 1]);
+			i++;
+		}
+		else if (string(argv[i]) == "--expos_comp_block_size")
+		{
+			expos_comp_block_size = atoi(argv[i + 1]);
+			i++;
+		}
+		else if (string(argv[i]) == "--seam")
+		{
+			if (string(argv[i + 1]) == "no" ||
+					string(argv[i + 1]) == "voronoi" ||
+					string(argv[i + 1]) == "gc_color" ||
+					string(argv[i + 1]) == "gc_colorgrad" ||
+					string(argv[i + 1]) == "dp_color" ||
+					string(argv[i + 1]) == "dp_colorgrad")
+				seam_find_type = argv[i + 1];
+			else
+			{
+				cout << "Bad seam finding method\n";
+				return -1;
+			}
+			i++;
+		}
+		else if (string(argv[i]) == "--blend")
+		{
+			if (string(argv[i + 1]) == "no")
+				blend_type = Blender::NO;
+			else if (string(argv[i + 1]) == "feather")
+				blend_type = Blender::FEATHER;
+			else if (string(argv[i + 1]) == "multiband")
+				blend_type = Blender::MULTI_BAND;
+			else
+			{
+				cout << "Bad blending method\n";
+				return -1;
+			}
+			i++;
+		}
+		else if (string(argv[i]) == "--timelapse")
+		{
+			timelapse = true;
+			if (string(argv[i + 1]) == "as_is")
+				timelapse_type = Timelapser::AS_IS;
+			else if (string(argv[i + 1]) == "crop")
+				timelapse_type = Timelapser::CROP;
+			else
+			{
+				cout << "Bad timelapse method\n";
+				return -1;
+			}
+			i++;
+		}
+		else if (string(argv[i]) == "--rangewidth")
+		{
+			range_width = atoi(argv[i + 1]);
+			i++;
+		}
+		else if (string(argv[i]) == "--blend_strength")
+		{
+			blend_strength = static_cast<float>(atof(argv[i + 1]));
+			i++;
+		}
+		else if (string(argv[i]) == "--output")
+		{
+			result_name = argv[i + 1];
+			i++;
+		}
+		else
+			img_names.push_back(argv[i]);
+	}
+	if (preview)
+	{
+		compose_megapix = 0.6;
+	}
+	return 0;
+}
+
+int main(int argc, char* argv[])
+{
+	cv::Mat xmap, ymap, xmap1, ymap1;
+	cv::Rect roi, roi1;
+
+	int fg = 1; 
+	int bg = 1; 
+	int sg = 1;
+
+	omp_set_num_threads(4); 
+	int retval = parseCmdArgs(argc, argv);
+	if (retval)
+		return retval;
+	/* Set the video Node for webcam
+	 * set its properties ,i.e., Width, Height, Frame rate and color format
+	 */
+	//VideoCapture cap1("/home/devashree-katarkar/camera1_output_first.mkv");
+	//VideoCapture cap2("/home/devashree-katarkar/camera2_output_first.mkv");
+
+    	auto start = high_resolution_clock::now();
+    	auto t8 = high_resolution_clock::now();
+	auto tt = high_resolution_clock::now();
+	
+	VideoCapture cap1(1, CAP_V4L2);
+	VideoCapture cap2(0, CAP_V4L2);
+	
+	cap1.set(CAP_PROP_CONVERT_RGB,0); 
+	cap2.set(CAP_PROP_CONVERT_RGB,0); 
+	
+	//std::cout << "Backend used: " << cap1.getBackendName() << std::endl;
+	//std::cout << "Backend used: " << cap2.getBackendName() << std::endl;
+	//return 0;
+	//cap1.set(CAP_PROP_FRAME_WIDTH, 640);
+	//cap1.set(CAP_PROP_FRAME_HEIGHT, 480);
+	//cap1.set(CAP_PROP_FPS, 30);
+	cap1.set(cv::CAP_PROP_FOURCC, VideoWriter::fourcc('M','J','P','G'));
+	//cap1.set(cv::CAP_PROP_FOURCC, VideoWriter::fourcc('Y','U','Y','V'));
+
+	//cap2.set(CAP_PROP_FRAME_WIDTH, 640);
+	//cap2.set(CAP_PROP_FRAME_HEIGHT, 480);
+	//cap2.set(CAP_PROP_FPS, 30);
+	cap2.set(cv::CAP_PROP_FOURCC, VideoWriter::fourcc('M','J','P','G'));
+	//cap2.set(cv::CAP_PROP_FOURCC, VideoWriter::fourcc('Y','U','Y','V'));
+
+	//cap1.set(cv::CAP_PROP_FOURCC, VideoWriter::fourcc('M','J','P','G'));
+	//cap2.set(cv::CAP_PROP_FOURCC, VideoWriter::fourcc('M','J','P','G'));
+
+	if (!cap1.isOpened() || !cap2.isOpened()){
+		cerr << "Error: Could not open video files" << endl;
+		return -1;
+	}
+
+	//sleep(5);
+	//Work scale value and flag are primarily used for resizing the frame for feature point detection
+	//Seam scale value and flag are used for downscaling the image for faster processing.
+
+
+	double seam_work_aspect    = 1;
+	double compose_work_aspect = 1;
+
+	double work_scale = 1, seam_scale = 1, compose_scale = 1;
+	bool is_work_scale_set = false, is_seam_scale_set = false, is_compose_scale_set = false;
+
+	VideoWriter writer;
+	Mat frame1, frame2;
+
+	vector<UMat> masks_warped(num_images);
+	vector<UMat> images_warped(num_images);
+	vector<Size> sizes(num_images);
+	vector<UMat> masks(num_images);
+	vector<UMat> images_warped_f(num_images);
+	vector<Point> corners(num_images);
+	Ptr<RotationWarper> warper; 
+
+	Size dst_sz;
+	float blend_width;
+	MultiBandBlender* mb;
+	FeatherBlender* fb;
+        
+	Size target_size(640, 400);
+	int count = 0;
+	int flag = 0;
+	//Using SIFT finder
+	Ptr<Feature2D> finder;
+	finder = ORB::create();
+
+	//sleep(2);
+
+	Mat_<float> K;
+	
+	auto t1 = high_resolution_clock::now();
+    	cout << "set all  " << duration_s(start, t1) << " s\n";
+
+
+	while(1){	
+
+		auto t1 = high_resolution_clock::now();
+#pragma omp critical
+		{
+		cap1 >> frame1;
+		cap2 >> frame2;
+		
+		}
+auto t2 = high_resolution_clock::now();
+    		cout << "captured both " << duration_s(t1, t2, 4) << " s\n";
+		
+		flag+=1;
+		if (flag == 1) { 
+			std::system("v4l2-ctl -d /dev/video0 -c analogue_gain=800"); 
+			//std::system("v4l2-ctl -d /dev/video0 --all"); 
+			// Flush 5 frames so new settings apply 
+			for (int i = 0; i < 20; i++) { 
+				cap1  >> frame1; 
+				cap2  >> frame2; 
+			} 
+			cout<<"frames are flushed"<<endl; 
+		} 
+		resize(frame1, frame1, target_size, 0, 0,INTER_LINEAR);
+		resize(frame2, frame2, target_size, 0, 0,INTER_LINEAR);
+		
+		cv::convertScaleAbs(frame1, frame1, 0.25, 0);
+		cv::convertScaleAbs(frame2, frame2, 0.25, 0);
+		cv::cvtColor(frame1, frame1, cv::COLOR_BayerGR2BGR);
+		cv::cvtColor(frame2, frame2, cv::COLOR_BayerGR2BGR);
+		
+		auto t3 = high_resolution_clock::now();
+    		cout << "pre processed " << duration_s(t2, t3, 4) << " s\n";
+
+
+
+		if (frame1.empty() || frame2.empty()) return 0;
+
+		std::vector<Mat> frames = {frame1, frame2};
+
+		Mat full_img, img;
+		vector<ImageFeatures> features(num_images);
+		vector<Mat> images(num_images);
+		vector<Size> full_img_sizes(num_images);
+		
+		/*#pragma omp parallel for
+		for (int i = 0; i < num_images && ((count%100) == 0); ++i)
+		//for (int i = 0; i < num_images && (count == 0); ++i)
+		{
+
+			full_img = frames[i];
+			full_img_sizes[i] = full_img.size();
+
+			if (full_img.empty())
+			{
+				#pragma omp critical
+				LOGLN("Can't open image " << img_names[i]);
+				return -1;
+			}
+
+			#pragma omp critical
+			if (!is_work_scale_set)
+			{
+				work_scale = min(1.0, sqrt(work_megapix * 1e6 / full_img.size().area()));
+				is_work_scale_set = true;
+			}
+
+			//resize(full_img, img, target_size, 0, 0, INTER_LINEAR_EXACT);
+
+			resize(full_img, img, Size(), work_scale, work_scale, INTER_LINEAR_EXACT);
+			#pragma omp critical
+			if (!is_seam_scale_set)
+			{
+				seam_scale = min(1.0, sqrt(seam_megapix * 1e6 / full_img.size().area()));
+				seam_work_aspect = seam_scale / work_scale;
+				is_seam_scale_set = true;
+			}
+
+			computeImageFeatures(finder, img, features[i]);
+			features[i].img_idx = i;
+			//LOGLN("Features in image #" << i+1 << ": " << features[i].keypoints.size());
+			resize(full_img, img, Size(), seam_scale, seam_scale, INTER_LINEAR_EXACT);
+			//resize(full_img, img, target_size, 0, 0, INTER_LINEAR_EXACT);
+			images[i] = img.clone();
+		}*/
+		//#pragma omp parallel for
+		for (int i = 0; (i < num_images); ++i) {
+			//if ((count % 100) != 0)
+			if (count != 0)
+				continue; // Only process every 100 frames
+
+			// Create local copies for thread safety
+			Mat full_img = frames[i];  // each thread gets its own copy
+			Mat img;
+			Size full_img_size = full_img.size();
+
+			if (full_img.empty()) {
+//#pragma omp critical
+				{
+					LOGLN("Can't open image " << img_names[i]);
+				}
+				continue;
+			}
+
+			// Work scale computation should be done once outside the loop or safely inside
+			//double local_work_scale = 1.0;
+			//bool local_is_work_scale_set = false;
+
+//#pragma omp critical
+			{
+				if (!is_work_scale_set) {
+					work_scale = min(1.0, sqrt(work_megapix * 1e6 / full_img.size().area()));
+					is_work_scale_set = true;
+				}
+				//local_work_scale = work_scale;
+			}
+
+			// Resize image using local scale
+			resize(full_img, img, Size(), work_scale, work_scale, INTER_LINEAR_EXACT);
+
+			// Seam scale computation
+			//double local_seam_scale = 1.0;
+			//double local_seam_work_aspect = 1.0;
+
+//#pragma omp critical
+			{
+				if (!is_seam_scale_set) {
+					seam_scale = min(1.0, sqrt(seam_megapix * 1e6 / full_img.size().area()));
+					seam_work_aspect = seam_scale / work_scale;
+					is_seam_scale_set = true;
+				}
+				//local_seam_scale = seam_scale;
+				//local_seam_work_aspect = seam_work_aspect;
+			}
+
+			// Compute features
+			computeImageFeatures(finder, img, features[i]);
+			features[i].img_idx = i;
+
+			// Resize again for seam
+			resize(full_img, img, Size(), seam_scale, seam_scale, INTER_LINEAR_EXACT);
+			images[i] = img.clone();
+
+			// Save the size safely
+			full_img_sizes[i] = full_img_size;
+		}
+		auto t4 = high_resolution_clock::now();
+    		cout << "feature detected " << duration_s(t3, t4, 4) << " s\n";
+
+
+
+/*
+		#pragma omp parallel for
+		for (int i = 0; i < num_images && ((count%100) != 0); ++i)
+		//for (int i = 0; i < num_images && ((count) != 0); ++i)
+		{
+			Mat seam_img;
+			resize(frames[i], seam_img, Size(), seam_scale, seam_scale, INTER_LINEAR_EXACT);
+			//resize(frames[i], seam_img, target_size, 0, 0, INTER_LINEAR_EXACT);
+			images[i] = seam_img.clone();
+		}
+*/
+		//if ((count % 100) != 0) {
+		if (count != 0) {
+//#pragma omp parallel for
+			for (int i = 0; i < num_images; ++i) {
+				Mat seam_img;
+				resize(frames[i], seam_img, Size(), seam_scale, seam_scale, INTER_LINEAR_EXACT);
+				images[i] = seam_img.clone();
+			}
+		}
+
+		/*
+		   for (int i = 0; i < num_images; ++i)
+		   {
+		   full_img = frames[i];
+		   full_img_sizes[i] = full_img.size();  // original size, if needed later
+
+		   if (full_img.empty())
+		   {
+		   LOGLN("Can't open image " << img_names[i]);
+		   return -1;
+		   }
+
+		// Resize directly to fixed resolution
+		resize(full_img, img, target_size, 0, 0, INTER_LINEAR_EXACT);
+
+		// Extract features on resized image
+		computeImageFeatures(finder, img, features[i]);
+		features[i].img_idx = i;
+		LOGLN("Features in image #" << i+1 << ": " << features[i].keypoints.size());
+
+		images[i] = img.clone();  // store resized image
+		}
+		 */
+		//Size sz = images[0].size();
+		//cout  << " resized data : width "<< sz.width << "height: " << sz.height << endl;
+
+		//indices = leaveBiggestComponent(features, pairwise_matches, conf_thresh);
+
+		if(fg == 1){
+		//if(fg == 1 || ((count%500) == 0)){
+			//cout << "one time init" << endl;
+
+			matcher = makePtr<BestOf2NearestRangeMatcher>(range_width, try_cuda, match_conf);
+			//matcher = makePtr<BestOf2NearestMatcher>(try_cuda, match_conf);
+			(*matcher)(features, pairwise_matches);
+			matcher->collectGarbage();
+			estimator = makePtr<HomographyBasedEstimator>();
+
+			if (!(*estimator)(features, pairwise_matches, cameras))
+			{
+				cout << "Homography estimation failed.\n";
+				return -1;
+			}
+
+			for (size_t i = 0; i < cameras.size(); ++i)
+			{
+				Mat R;
+				cameras[i].R.convertTo(R, CV_32F);
+				cameras[i].R = R;
+			}
+
+			adjuster = makePtr<detail::BundleAdjusterRay>();
+			adjuster->setConfThresh(conf_thresh);
+
+			Mat_<uchar> refine_mask = Mat::zeros(3, 3, CV_8U);
+			if (ba_refine_mask[0] == 'x') refine_mask(0,0) = 1;
+			if (ba_refine_mask[1] == 'x') refine_mask(0,1) = 1;
+			if (ba_refine_mask[2] == 'x') refine_mask(0,2) = 1;
+			if (ba_refine_mask[3] == 'x') refine_mask(1,1) = 1;
+			if (ba_refine_mask[4] == 'x') refine_mask(1,2) = 1;
+
+			adjuster->setRefinementMask(refine_mask);
+
+			if (!(*adjuster)(features, pairwise_matches, cameras))
+			{
+				cout << "Camera parameters adjusting failed.\n";
+				return -1;
+			}
+
+			// Find median focal length
+			for (size_t i = 0; i < cameras.size(); ++i)
+			{
+				focals.push_back(cameras[i].focal);
+			}
+
+			sort(focals.begin(), focals.end());
+
+			if (focals.size() % 2 == 1)
+				warped_image_scale = static_cast<float>(focals[focals.size() / 2]);
+			else
+				warped_image_scale = static_cast<float>(focals[focals.size() / 2 - 1] + focals[focals.size() / 2]) * 0.5f;
+			
+			//wave correction - horizontal
+			vector<Mat> rmats;
+			for (size_t i = 0; i < cameras.size(); ++i)
+				rmats.push_back(cameras[i].R.clone());
+			waveCorrect(rmats, wave_correct);
+			for (size_t i = 0; i < cameras.size(); ++i)
+				cameras[i].R = rmats[i];
+			
+			for (int i = 0; i < num_images; ++i)
+			{
+				masks[i].create(images[i].size(), CV_8U);
+				masks[i].setTo(Scalar::all(255));
+			}
+
+			//For warping frames onto one another spericalwarper is required to give wide panoramic view
+			//Also coordinates used are sperical coordinates
+
+			//warper_creator = makePtr<cv::SphericalWarper>();
+			warper_creator = makePtr<cv::CylindricalWarper>();
+			if (!warper_creator)
+			{
+				cout << "Can't create the following warper '" << warp_type << "'\n";
+				return 1;
+			}
+			//seam_finder = makePtr<detail::DpSeamFinder>(DpSeamFinder::COLOR_GRAD);
+			//seam_finder = cv::makePtr<cv::detail::DpSeamFinder>(cv::detail::DpSeamFinderBase::COLOR_GRAD);
+			seam_finder = makePtr<detail::GraphCutSeamFinder>(GraphCutSeamFinderBase::COST_COLOR);
+			if (!seam_finder)
+			{
+				cout << "Can't create the following seam finder '" << seam_find_type << "'\n";
+				return 1;
+			}
+
+			warper = warper_creator->create(static_cast<float>(warped_image_scale * seam_work_aspect));
+
+			compensator = ExposureCompensator::createDefault(expos_comp_type);
+
+			if (dynamic_cast<GainCompensator*>(compensator.get()))
+			{
+				GainCompensator* gcompensator = dynamic_cast<GainCompensator*>(compensator.get());
+				gcompensator->setNrFeeds(expos_comp_nr_feeds);
+			}
+
+			if (dynamic_cast<ChannelsCompensator*>(compensator.get()))
+			{
+				ChannelsCompensator* ccompensator = dynamic_cast<ChannelsCompensator*>(compensator.get());
+				ccompensator->setNrFeeds(expos_comp_nr_feeds);
+			}
+
+			if (dynamic_cast<BlocksCompensator*>(compensator.get()))
+			{
+				BlocksCompensator* bcompensator = dynamic_cast<BlocksCompensator*>(compensator.get());
+				bcompensator->setNrFeeds(expos_comp_nr_feeds);
+				bcompensator->setNrGainsFilteringIterations(expos_comp_nr_filtering);
+				bcompensator->setBlockSize(expos_comp_block_size, expos_comp_block_size);
+			}
+
+
+			fg = 0;
+		}
+		
+		auto t5 = high_resolution_clock::now();
+    		cout << "initialisation done " << duration_s(t4, t5, 4) << " s\n";
+
+
+
+		//#pragma omp parallel for
+		for (int i = 0; i < num_images; ++i)
+		{
+		
+			if (count == 0){
+			//if (count%100 == 0){
+				
+				masks[i].setTo(Scalar::all(255));
+				
+				cameras[i].K().convertTo(K, CV_32F);
+				float swa = (float)seam_work_aspect;
+				K(0,0) *= swa; K(0,2) *= swa;
+				K(1,1) *= swa; K(1,2) *= swa;
+
+				corners[i] = warper->warp(images[i], K, cameras[i].R, INTER_LINEAR, BORDER_REFLECT, images_warped[i]);
+				sizes[i] = images_warped[i].size();
+				warper->warp(masks[i], K, cameras[i].R, INTER_NEAREST, BORDER_CONSTANT, masks_warped[i]);
+
+			}
+		}
+		auto t6 = high_resolution_clock::now();
+    		cout << "warping calculations " << duration_s(t5, t6, 4) << " s\n";
+
+
+			//if(fg == 0){
+			//	for (int i = 0; i < num_images; ++i)
+			//	{
+			//		masks[i].setTo(Scalar::all(255));
+			//		warper->warp(masks[i], K, cameras[i].R, INTER_NEAREST, BORDER_CONSTANT, masks_warped[i]);
+			//	}
+			//}
+
+			//Mat_<float> K;
+			/*for (int i = 0; i < num_images; ++i)
+			  {
+			  masks[i].setTo(Scalar::all(255));
+			  cameras[i].K().convertTo(K, CV_32F);
+
+			// Scale intrinsics from original -> 360x240
+			float scale_x = (float)target_size.width / full_img_sizes[i].width;
+			float scale_y = (float)target_size.height / full_img_sizes[i].height;
+			K(0,0) *= scale_x;  // fx
+			K(1,1) *= scale_y;  // fy
+			K(0,2) *= scale_x;  // cx
+			K(1,2) *= scale_y;  // cy
+
+			corners[i] = warper->warp(images[i], K, cameras[i].R,
+			INTER_LINEAR, BORDER_REFLECT, images_warped[i]);
+
+			sizes[i] = images_warped[i].size();
+			warper->warp(masks[i], K, cameras[i].R,
+			INTER_NEAREST, BORDER_CONSTANT, masks_warped[i]);
+			}*/
+
+			//######################################################
+			// PER FRAME LOOP
+			//######################################################
+
+			//Mat frame3, frame4;
+			/*
+			   if(bg == 1){
+
+			   cout <<  " do not enter on first " << endl;
+			   cap1 >> frame1;
+			   cap2 >> frame2;
+			   frames = {frame1, frame2};
+
+			   if (frame1.empty() || frame2.empty()) return 0;
+
+			   for (int i = 0; i < num_images; ++i) {
+			   Mat seam_img;
+			   resize(frames[i], seam_img, Size(), seam_scale, seam_scale, INTER_LINEAR_EXACT);
+			   images[i] = seam_img.clone();
+			   }
+
+			   Size init_size(360, 240);
+			   for (int i = 0; i < num_images; ++i)
+			   {
+			   Mat sm_img;
+			   resize(frames[i], sm_img, init_size, 0, 0, INTER_LINEAR_EXACT);
+			   images[i] = sm_img.clone();
+			   }
+			//cout << "images resized" << endl;
+
+			for (int i = 0; i < num_images; ++i)
+			{
+			masks[i].setTo(Scalar::all(255));
+			warper->warp(masks[i], K, cameras[i].R, INTER_NEAREST, BORDER_CONSTANT, masks_warped[i]);
+			}
+
+			}*/
+
+			for (int i = 0; i < num_images; ++i)
+				images_warped[i].convertTo(images_warped_f[i], CV_32F);
+
+			// Normalize corners so minimum x,y becomes 0 (avoids negative ROI)
+
+			/*	int min_x = INT_MAX, min_y = INT_MAX;
+				for (int i = 0; i < num_images; ++i) {
+				min_x = std::min(min_x, corners[i].x);
+				min_y = std::min(min_y, corners[i].y);
+				}
+				if (min_x < 0 || min_y < 0) {
+				for (int i = 0; i < num_images; ++i) {
+				corners[i].x -= min_x;
+				corners[i].y -= min_y;
+				}
+				}
+			 */
+//#pragma omp critical	
+			if (count==0)
+			{
+			compensator->feed(corners, images_warped, masks_warped);
+
+			//images.clear();
+			//images_warped.clear();
+			//images_warped_f.clear();
+			//masks.clear();
+//bad place
+			//auto t7 = high_resolution_clock::now();
+ //   		cout <<"compensator and seam finding done" << duration_s(t6, t7, 4) << " s\n";
+
+
+			seam_finder->find(images_warped_f, corners, masks_warped);
+			}
+			int a  = 0;
+
+			Mat img_warped, img_warped_s;
+			Mat dilated_mask, seam_mask, mask, mask_warped;
+			Ptr<Blender> blender;
+			Ptr<Timelapser> timelapser;
+		
+			auto t7 = high_resolution_clock::now();
+    		cout <<"compensator and seam finding done" << duration_s(t6, t7, 4) << " s\n";
+
+
+			for (int img_idx = 0; img_idx < num_images; ++img_idx)
+			{
+				full_img = frames[a++];
+
+				if (!is_compose_scale_set)
+				{
+
+					if (compose_megapix > 0)
+						compose_scale = min(1.0, sqrt(compose_megapix * 1e6 / full_img.size().area()));
+					is_compose_scale_set = true;
+
+					// Compute relative scales
+					//compose_seam_aspect = compose_scale / seam_scale;
+					compose_work_aspect = compose_scale / work_scale;
+					
+					// Update warped image scale
+					warped_image_scale *= static_cast<float>(compose_work_aspect);
+					warper = warper_creator->create(warped_image_scale);
+
+					// Update corners and sizes
+					for (int i = 0; i < num_images; ++i)
+					{
+						// Update intrinsics
+						cameras[i].focal *= compose_work_aspect;
+						cameras[i].ppx *= compose_work_aspect;
+						cameras[i].ppy *= compose_work_aspect;
+
+						// Update corner and size
+						Size sz = full_img_sizes[i];
+						if (std::abs(compose_scale - 1) > 1e-1)
+						{
+							sz.width = cvRound(full_img_sizes[i].width * compose_scale);
+							sz.height = cvRound(full_img_sizes[i].height * compose_scale);
+						}
+						Mat K;
+						cameras[i].K().convertTo(K, CV_32F);
+						Rect roi = warper->warpRoi(sz, K, cameras[i].R);
+						corners[i] = roi.tl();
+						sizes[i] = roi.size();
+					}
+				}
+
+				if (abs(compose_scale - 1) > 1e-1)
+					resize(full_img, img, Size(), compose_scale, compose_scale, INTER_LINEAR_EXACT);
+				else
+					img = full_img;
+		t8 = high_resolution_clock::now();
+    		cout << "enlarging done " << duration_s(t7, t8, 4) << " s\n";
+
+#pragma omp critical
+		{
+				//full_img.release();
+				Size img_size = img.size();
+				Mat K;
+				cameras[img_idx].K().convertTo(K, CV_32F);
+				
+				// Warp the current image
+				//warper->warp(img, K, cameras[img_idx].R, INTER_LINEAR, BORDER_REFLECT, img_warped);
+				
+				 
+				if (count==0)
+					roi= warper->buildMaps(img.size(), K, cameras[img_idx].R, xmap, ymap);
+
+				//cv::Mat img_warped;
+				cv::remap(img, img_warped, xmap, ymap, cv::INTER_LINEAR, cv::BORDER_REFLECT);
+
+				//cv::Mat xmap, ymap;
+				//warper->buildMaps(img.size(), K, cameras[img_idx].R, xmap, ymap);
+				//cv::Mat img_warped = warpOnGPU(img, warper, K, cameras[img_idx].R);
+				
+
+				// Warp the current image mask
+				mask.create(img_size, CV_8U);
+				mask.setTo(Scalar::all(255));
+				//warper->warp(mask, K, cameras[img_idx].R, INTER_NEAREST, BORDER_CONSTANT, mask_warped);
+				if (count==0)
+					roi1 = warper->buildMaps(img_size, K, cameras[img_idx].R, xmap1, ymap1);
+				cv::remap(mask, mask_warped, xmap1, ymap1, cv::INTER_NEAREST, cv::BORDER_CONSTANT);
+
+
+
+
+		}	
+				tt = high_resolution_clock::now();
+    		cout << "warping done " << duration_s(t8, tt, 4) << " s\n";
+
+	
+				// Compensate exposure
+				compensator->apply(img_idx, corners[img_idx], img_warped, mask_warped);
+				img_warped.convertTo(img_warped_s, CV_16S);
+
+				// Compensate exposure
+				img_warped.release();
+				full_img.release();
+				mask.release();
+				dilate(masks_warped[img_idx], dilated_mask, Mat());
+				resize(dilated_mask, seam_mask, mask_warped.size(), 0, 0, INTER_LINEAR_EXACT);
+				mask_warped = seam_mask & mask_warped;
+
+				// Compensate exposure
+				if (!blender && !timelapse)
+				{
+					blender = Blender::createDefault(blend_type, try_cuda);
+					dst_sz = resultRoi(corners, sizes).size();
+					//dst_sz = target_size; 
+					blend_width = sqrt(static_cast<float>(dst_sz.area())) * blend_strength / 100.f;
+
+					//FeatherBlender* fb = dynamic_cast<FeatherBlender*>(blender.get());
+					//fb->setSharpness(1.f/blend_width);
+					mb = dynamic_cast<MultiBandBlender*>(blender.get());
+					mb->setNumBands(static_cast<int>(ceil(log(blend_width)/log(2.)) - 1.));
+					//LOGLN("Multi-band blender, number of bands: " << mb->numBands());
+
+					blender->prepare(corners, sizes);
+				}
+
+				blender->feed(img_warped_s, mask_warped, corners[img_idx]);
+			}
+		auto t9 = high_resolution_clock::now();
+    		cout << "exposure compensate  done " << duration_s(tt, t9, 4) << " s\n";
+
+
+		/*	if (sg) {
+				writer.open("output.avi",
+						cv::VideoWriter::fourcc('M', 'J', 'P', 'G'), // MJPEG codec
+						30,                                       // FPS
+						dst_sz);                                  // Size of the video frames
+				if (!writer.isOpened()) {
+					std::cerr << "Error: Could not open the output video file!" << std::endl;
+					return -1;
+				}
+				sg = 0;
+			}
+		*/
+			Mat result, result_mask;
+			blender->blend(result, result_mask);
+		auto t10 = high_resolution_clock::now();
+    		cout << "Blending done " << duration_s(t9, t10, 4) << " s\n";
+
+
+			//	imwrite(result_name, result);
+			Mat result_8u;
+
+		//	if (result.depth() != CV_8U)
+				result.convertTo(result_8u, CV_8U);  // simple scale, might clip
+	
+			double gain_b, gain_r;
+    			result_8u = auto_white_balance(result_8u, 50, 1e-6, &gain_b, &gain_r);
+    		
+
+				//	else
+		//		result_8u = result;
+	/*
+			// Crop portion
+			int targetWidth  = 940;  // Change this to your desired width
+			int targetHeight = 400; // Change this to your desired height
+
+			// Define the cropping region (for example, starting from (100, 50) and cropping to (500, 350))
+			int cropX = 0;
+			int cropY = 90;
+			int cropWidth = targetWidth;  // You can adjust the width of the cropped area
+			int cropHeight = targetHeight; // You can adjust the height of the cropped area
+
+			// Define the region of interest (ROI) based on the target resolution
+			Rect cropRegion(cropX, cropY, cropWidth, cropHeight);
+
+			// Crop the image (extract the region of interest)
+			 result_8u = result_8u(cropRegion);
+	*/
+			//croppedImage.copyTo(canva);
+
+			//resize(result_8u, result_8u, target_size, 0, 0,INTER_LINEAR);
+			count++;
+			//std::cout << "count is "<<count << std::endl;
+		//writer.write(result_8u);
+
+			imshow("Stitched Video", result_8u);
+			auto t11 = high_resolution_clock::now();
+    			cout << "displayed " << duration_s(t10, t11, 4) << " s\n";
+			
+    			cout << "total is " << duration_s(t1, t11, 4) << " s\n";
+			
+
+			cout <<"\n\n\n\n"<<endl;
+
+
+			waitKey(1);   
+		}
+		writer.release();
+		return 0;
+	}
