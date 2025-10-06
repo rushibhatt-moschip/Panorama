@@ -692,7 +692,7 @@ int main(int argc, char* argv[])
 #if ENABLE_LOG
 		t = getTickCount();
 #endif
-		for (int img_idx = 0; img_idx < num_images; ++img_idx)
+		for (int img_idx = 0; img_idx < num_images && k == 0; ++img_idx)
 		{
 			LOGLN("Compositing image #" << indices[img_idx]+1);
 			// Read image and resize it if necessary
