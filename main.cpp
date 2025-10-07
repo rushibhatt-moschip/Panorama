@@ -476,6 +476,19 @@ int main(int argc, char* argv[])
 			images[i] = seam_img.clone();
 		}
 
+		/* Matcher object initialization 
+		 * 		|
+		 * Homography object initialization
+		 * 		|
+		 * Camera parameter estimation
+		 * 		|
+		 * Bundle Adjustment
+		 * 		|
+		 * Mask creation
+		 * 		|
+		 * Seam Finding, warper selection, compensator obj init
+		 *
+		*/
 		if(fg == 1){
 
 			matcher = makePtr<BestOf2NearestMatcher>(try_cuda, match_conf);

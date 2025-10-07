@@ -298,6 +298,20 @@ int main(int argc, char* argv[])
 			}
 		}
 
+		/* Matcher object initialization 
+		 * 		|
+		 * Homography object initialization
+		 * 		|
+		 * Camera parameter estimation
+		 * 		|
+		 * Bundle Adjustment
+		 * 		|
+		 * Mask creation
+		 * 		|
+		 * Seam Finding, warper selection, compensator obj init
+		 *
+		*/
+
 		if(fg == 1){
 			matcher = makePtr<BestOf2NearestRangeMatcher>(range_width, try_cuda, match_conf);
 			(*matcher)(features, pairwise_matches);
