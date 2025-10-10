@@ -11,9 +11,9 @@
 
 g++ -fopenmp main.cpp -o main `pkg-config --cflags --libs opencv4`
 
-***Note: If using openmp compiler directives 
+### Note: If using openmp compiler directives 
 
-## g++ -fopenmp main.cpp -o main `pkg-config --cflags --libs opencv4`
+g++ -fopenmp main.cpp -o main `pkg-config --cflags --libs opencv4`
 
 ## Example pipeline
 
