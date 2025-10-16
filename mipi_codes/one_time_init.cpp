@@ -745,8 +745,8 @@ auto t2 = high_resolution_clock::now();
 			//For warping frames onto one another spericalwarper is required to give wide panoramic view
 			//Also coordinates used are sperical coordinates
 
-			//warper_creator = makePtr<cv::SphericalWarper>();
-			warper_creator = makePtr<cv::CylindricalWarper>();
+			warper_creator = makePtr<cv::SphericalWarper>();
+			//warper_creator = makePtr<cv::CylindricalWarper>();
 			if (!warper_creator)
 			{
 				cout << "Can't create the following warper '" << warp_type << "'\n";

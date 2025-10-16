@@ -489,6 +489,7 @@ int main(int argc, char* argv[])
 		 * Seam Finding, warper selection, compensator obj init
 		 *
 		*/
+
 		if(fg == 1){
 
 			matcher = makePtr<BestOf2NearestMatcher>(try_cuda, match_conf);

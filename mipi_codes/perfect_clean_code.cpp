@@ -250,6 +250,7 @@ int main(int argc, char* argv[])
 		vector<ImageFeatures> features(num_images);
 		vector<Mat> images(num_images);
 		vector<Size> full_img_sizes(num_images);
+
 		for (int i = 0; (i < num_images); ++i) {
 			if (count != 0)
 				continue; // Only process first frames
@@ -324,6 +325,7 @@ int main(int argc, char* argv[])
 				cout << "Homography estimation failed.\n";
 				return -1;
 			}
+			
 			//matrix parameter conversion from double to float
 			for (size_t i = 0; i < cameras.size(); ++i)
 			{

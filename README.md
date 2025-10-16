@@ -6,10 +6,19 @@
 3. main     		- Binary for video stitching code for 2 usb webcams  
 4. main.cpp 		- Video stitching code for 2 usb webcams 
 5. vid_streaming.cpp    - streaming camera-to-diaplay code.
+6. mipi_codes  		- contains codes of video stitching using mipi cameras
+	|
+	--------------------------------------------------------------------------------------------------------------------------------------
+	|				|							|
+	perfect_clean_code.cpp		latest_updates.cpp					one_time_init.cpp
+	-Commented and optimized code   -Uncommented and contains additional features    	- Un-optimized understandable code.
+				 	 like crop,resize & assertion temporary solved
+7. resultant_imgs  	- contains stitched images.
+8. usb_codes  		- contains code for usb camera video stitching (feature point matching happens only once)
 
 ## Compilation steps
 
-g++ -fopenmp main.cpp -o main `pkg-config --cflags --libs opencv4`
+g++ main.cpp -o main `pkg-config --cflags --libs opencv4`
 
 ### Note: If using openmp compiler directives 
 
