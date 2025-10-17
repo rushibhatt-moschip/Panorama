@@ -1,4 +1,4 @@
-***Note: This directory contains codes for video stitchig foe USB cameras and Web-cameras as well.
+*Note: This directory contains codes for video stitchig foe USB cameras and Web-cameras as well.
 
 ## Contents of the directory
 1. Usage    		- Binary which prints the commnad line args which can be passed to the video stitching algorithm
