@@ -46,6 +46,7 @@ float conf_thresh = 1.f;
 int crop=0;
 int crop_input=0;
 int resize_win=0;
+cv::Rect dst_roi ;
 int left_x_cor=0;
 int left_y_cor=0;
 int left_width=640;
@@ -668,7 +669,21 @@ cv::Rect adaptive_crop_panorama(const Mat& stitched_image) {
 					blend_width = sqrt(static_cast<float>(dst_sz.area())) * blend_strength / 100.f;
 					mb = dynamic_cast<MultiBandBlender*>(blender.get());
 					mb->setNumBands(static_cast<int>(ceil(log(blend_width)/log(2.)) - 1.));
-					blender->prepare(corners, sizes);
+					//blender->prepare(corners, sizes);
+					dst_roi = cv::detail::resultRoi(corners, sizes);
+					// Expand ROI slightly to guarantee fit for all warped images
+					const int safety_margin = 64; // can tune between 32–128
+					dst_roi.x -= safety_margin;
+					dst_roi.y -= safety_margin;
+					dst_roi.width  += safety_margin * 2;
+					dst_roi.height += safety_margin * 2;
+					blender->prepare(dst_roi);
+					/*std::cout << "ROI from resultRoi: x=" << dst_roi.x
+					  << " y=" << dst_roi.y
+					  << " width=" << dst_roi.width
+					  << " height=" << dst_roi.height
+					  << std::endl;*/
+
 				}
 
 				if (img_warped.empty() || mask_warped.empty() || img_warped_s.empty())  {
@@ -676,6 +691,19 @@ cv::Rect adaptive_crop_panorama(const Mat& stitched_image) {
 					cout<< "Please dont move on the overlapping region and run the code again" << endl;
 					return -1;
 				}
+				if(dst_roi.width>1400||dst_roi.height>800|| dst_roi.height<300||dst_roi.width<500)
+				{
+					cout << "------ \n\n\n\n Break here \n\n\n " << dst_roi.height <<"  "<< dst_roi.width << " "<< img_idx << endl ;
+
+				}
+
+				//the first image that comes is of left camera verify by cv::imshow("img",full_img); at the start of this block
+				cout << "--- Blender Feed Diagnostics (Frame: " << count << ", Image: " << img_idx << ") ---" << endl;
+				cout << "Warped Image Size (Cols x Rows): " << img_warped_s.cols << " x " << img_warped_s.rows << endl;
+				cout << "Warped Mask Size (Cols x Rows): " << mask_warped.cols << " x " << mask_warped.rows << endl;
+				cout << "Corner (X, Y) Position: (" << corners[img_idx].x << ", " << corners[img_idx].y << ")" << endl;
+				cout << "------------------------------------------------------------------" << endl;
+
 				blender->feed(img_warped_s, mask_warped, corners[img_idx]);
 				img_warped.release();
 			}
@@ -689,7 +717,7 @@ cv::Rect adaptive_crop_panorama(const Mat& stitched_image) {
 			double gain_b, gain_r;
 			result_8u = auto_white_balance(result_8u, 50, 1e-6, &gain_b, &gain_r);
 
-			cout<< "ALMOSTT DONE " << endl;
+			//cout<< "ALMOSTT DONE " << endl;
 			Rect rroi = resultRoi(corners, sizes); // valid stitched region
 
 			if (crop){
