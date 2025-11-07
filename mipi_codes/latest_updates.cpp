@@ -44,7 +44,16 @@ double seam_megapix = 0.1;
 double compose_megapix = -1;
 float conf_thresh = 1.f;
 int crop=0;
+int crop_input=0;
 int resize_win=0;
+int left_x_cor=0;
+int left_y_cor=0;
+int left_width=640;
+int left_height=400;
+int right_x_cor=0;
+int right_y_cor=0;
+int right_width=640;
+int right_height=400;
 #ifdef HAVE_OPENCV_XFEATURES2D
 string features_type = "surf";
 float match_conf = 0.65f;
@@ -262,6 +271,23 @@ cv::Rect adaptive_crop_panorama(const Mat& stitched_image) {
 				crop=1;
 				//	i++;
 			}
+			else if (string(argv[i]) == "--crop_input")
+			{
+				cout << "I am input crop" << endl;
+				cout << "Rect (x_corr, y_corr, width, height)" << endl; 
+				cout << "Example : ./main --conf_thresh 0.5 --crop_input 0 0 640 400 0 0 640 400" << endl;
+				cout << "start with left cam input Rect (0, 0, 640, 400)" << endl; 
+				left_x_cor = atoi(argv[++i]);
+				left_y_cor = atoi(argv[++i]);
+				left_width = atoi(argv[++i]);
+				left_height= atoi(argv[++i]);
+
+				right_x_cor = atoi(argv[++i]);
+				right_y_cor = atoi(argv[++i]);
+				right_width = atoi(argv[++i]);
+				right_height= atoi(argv[++i]);
+				crop_input=1;
+			}
 			else if (string(argv[i]) == "--resize")
 			{
 				cout << "I am resize" << endl;
@@ -274,9 +300,6 @@ cv::Rect adaptive_crop_panorama(const Mat& stitched_image) {
 
 	int main(int argc, char* argv[])
 	{
-		int w1,w2,w3,w4;
-
-
 		cout << "Press 'q' to exit" << endl;
 		cv::Mat xmap, ymap, xmap1, ymap1;
 		cv::Rect roi, roi1;
@@ -342,7 +365,7 @@ cv::Rect adaptive_crop_panorama(const Mat& stitched_image) {
 			cv::namedWindow("Stitched Video", cv::WINDOW_AUTOSIZE);
 		//setWindowProperty("Stitched Video", WND_PROP_FULLSCREEN, WINDOW_FULLSCREEN);
 
-			Ptr<Blender> saver;
+		Ptr<Blender> saver;
 
 		while(1){	
 			cap1 >> frame1;
@@ -360,7 +383,15 @@ cv::Rect adaptive_crop_panorama(const Mat& stitched_image) {
 			} 
 			resize(frame1, frame1, target_size, 0, 0,INTER_LINEAR);
 			resize(frame2, frame2, target_size, 0, 0,INTER_LINEAR);
+			// Crop the image (extract the region of interest)
+			if(crop_input == 1){
+				Rect cropRegion1(left_x_cor, left_y_cor, left_width, left_height);
+				Rect cropRegion2(right_x_cor, right_y_cor, right_width, right_height);
 
+				frame1 = frame1(cropRegion1);//left cam
+				frame2 = frame2(cropRegion2);//right cam
+							     // cropping ends
+			}
 			cv::convertScaleAbs(frame1, frame1, 0.25, 0);
 			cv::convertScaleAbs(frame2, frame2, 0.25, 0);
 			cv::cvtColor(frame1, frame1, cv::COLOR_BayerGR2BGR);
@@ -498,7 +529,8 @@ cv::Rect adaptive_crop_panorama(const Mat& stitched_image) {
 					cout << "Can't create the following warper '" << warp_type << "'\n";
 					return 1;
 				}
-				seam_finder = makePtr<detail::GraphCutSeamFinder>(GraphCutSeamFinderBase::COST_COLOR);
+				//seam_finder = makePtr<detail::GraphCutSeamFinder>(GraphCutSeamFinderBase::COST_COLOR);
+				seam_finder = makePtr<detail::GraphCutSeamFinder>(GraphCutSeamFinderBase::COST_COLOR_GRAD);
 				if (!seam_finder)
 				{
 					cout << "Can't create the following seam finder '" << seam_find_type << "'\n";
@@ -644,18 +676,6 @@ cv::Rect adaptive_crop_panorama(const Mat& stitched_image) {
 					cout<< "Please dont move on the overlapping region and run the code again" << endl;
 					return -1;
 				}
-				w1=img_warped_s.cols + img_warped_s.rows;
-				if (count ==0 && img_idx == 0 )
-					w2=w1;
-				if (w2 < w1)
-					cout << "HAHAHAH \n\n\n\n U got tricked\n\n\n " << endl ; 
-				
-				//cout << "--- Blender Feed Diagnostics (Frame: " << count << ", Image: " << img_idx << ") ---" << endl;
-				//cout << "Warped Image Size (Cols x Rows): " << img_warped_s.cols << " x " << img_warped_s.rows << endl;
-				//cout << "Warped Mask Size (Cols x Rows): " << mask_warped.cols << " x " << mask_warped.rows << endl;
-				//cout << "Corner (X, Y) Position: (" << corners[img_idx].x << ", " << corners[img_idx].y << ")" << endl;
-				//cout << "------------------------------------------------------------------" << endl;
-				
 				blender->feed(img_warped_s, mask_warped, corners[img_idx]);
 				img_warped.release();
 			}
