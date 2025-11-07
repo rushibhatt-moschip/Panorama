@@ -698,12 +698,12 @@ cv::Rect adaptive_crop_panorama(const Mat& stitched_image) {
 				}
 
 				//the first image that comes is of left camera verify by cv::imshow("img",full_img); at the start of this block
-				cout << "--- Blender Feed Diagnostics (Frame: " << count << ", Image: " << img_idx << ") ---" << endl;
+				/*cout << "--- Blender Feed Diagnostics (Frame: " << count << ", Image: " << img_idx << ") ---" << endl;
 				cout << "Warped Image Size (Cols x Rows): " << img_warped_s.cols << " x " << img_warped_s.rows << endl;
 				cout << "Warped Mask Size (Cols x Rows): " << mask_warped.cols << " x " << mask_warped.rows << endl;
 				cout << "Corner (X, Y) Position: (" << corners[img_idx].x << ", " << corners[img_idx].y << ")" << endl;
 				cout << "------------------------------------------------------------------" << endl;
-
+				*/
 				blender->feed(img_warped_s, mask_warped, corners[img_idx]);
 				img_warped.release();
 			}
@@ -734,6 +734,12 @@ cv::Rect adaptive_crop_panorama(const Mat& stitched_image) {
 			imshow("Stitched Video", result_8u);
 			int key = waitKey(1);
 			count++;
+			if (key == 'n'){
+				count=0;
+				fg=1;
+				is_compose_scale_set=false;
+				cout << "calculating again" << endl;
+			}
 			if (key == 'q' || key == 'l')  // press 'q' or 'Q' to quit
 			{
 				cout << "Exiting" << endl;
