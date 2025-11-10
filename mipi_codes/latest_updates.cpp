@@ -85,6 +85,7 @@ int range_width = -1;
 Ptr<WarperCreator> warper_creator;
 
 
+int seam_calc=0;
 vector<MatchesInfo> pairwise_matches;
 Ptr<FeaturesMatcher> matcher;
 Ptr<Estimator> estimator;
@@ -565,7 +566,7 @@ cv::Rect adaptive_crop_panorama(const Mat& stitched_image) {
 
 			for (int i = 0; i < num_images; ++i)
 			{
-				if (count == 0){
+				if (count == 0 || seam_calc == 1){
 
 					masks[i].setTo(Scalar::all(255));
 					cameras[i].K().convertTo(K, CV_32F);
@@ -583,10 +584,15 @@ cv::Rect adaptive_crop_panorama(const Mat& stitched_image) {
 				images_warped[i].convertTo(images_warped_f[i], CV_32F);
 
 			// Normalize corners so minimum x,y becomes 0 (avoids negative ROI)
-			if (count==0)
+			if (count==0 || seam_calc == 1)
 			{
 				compensator->feed(corners, images_warped, masks_warped);
 				seam_finder->find(images_warped_f, corners, masks_warped);
+				//Reduces black patches that comes when not properly stitched
+				for (auto &mask : masks_warped) {
+					cv::dilate(mask, mask, cv::Mat(), cv::Point(-1, -1), 2);
+				}
+				seam_calc=0;
 			}
 			int a  = 0;
 
@@ -734,9 +740,13 @@ cv::Rect adaptive_crop_panorama(const Mat& stitched_image) {
 			imshow("Stitched Video", result_8u);
 			int key = waitKey(1);
 			count++;
+			// this block is to reset the seam and find it again
+			if (key == 's'){
+				seam_calc=1;}
 			if (key == 'n'){
 				count=0;
 				fg=1;
+				seam_calc=1;
 				is_compose_scale_set=false;
 				cout << "calculating again" << endl;
 			}
