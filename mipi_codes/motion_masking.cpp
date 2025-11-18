@@ -140,7 +140,7 @@ cv::Mat computeMotionMaskk(const cv::Mat& frame)
 	// if first frame → initialize
 	if (prev_grayy.empty()) {
 		gray.copyTo(prev_grayy);
-		cv::imshow("saved frame is",prev_grayy);
+		//cv::imshow("saved frame is",prev_grayy);
 		//		cv::waitKey(0);
 
 		motion_mask = cv::Mat::ones(gray.size(), CV_8U)*255;
@@ -778,9 +778,11 @@ cv::Rect adaptive_crop_panorama(const Mat& stitched_image) {
 				{
 					blender = Blender::createDefault(blend_type, try_cuda);
 					dst_sz = resultRoi(corners, sizes).size();
-					blend_width = sqrt(static_cast<float>(dst_sz.area())) * blend_strength / 100.f;
+					blend_width =sqrt(static_cast<float>(dst_sz.area())) * blend_strength / 100.f;
+					cout<<"blend_width is" <<blend_width;
 					mb = dynamic_cast<MultiBandBlender*>(blender.get());
 					mb->setNumBands(static_cast<int>(ceil(log(blend_width)/log(2.)) - 1.));
+					//mb->setNumBands(1);
 					//blender->prepare(corners, sizes);
 
 					dst_roi = cv::detail::resultRoi(corners, sizes);
@@ -791,6 +793,7 @@ cv::Rect adaptive_crop_panorama(const Mat& stitched_image) {
 					dst_roi.y -= safety_margin;
 					dst_roi.width  += safety_margin * 2;
 					dst_roi.height += safety_margin * 2;
+					
 
 					blender->prepare(dst_roi);
 
@@ -803,15 +806,20 @@ cv::Rect adaptive_crop_panorama(const Mat& stitched_image) {
 
 
 				if(t%2==1&&now==1){//&&count!=0){
-					cv::imshow("untouched mask", mask_warped);
+				//	cv::imshow("untouched mask", mask_warped);
 					//	cv::imshow("init image",img_warped);
 					cv::Mat motion_mask = computeMotionMask(img_warped);
 					//cv::imshow("motion mask is ", motion_mask);
-					Mat masked_img;
+					Mat masked_img,res_temp;
 					//bitwise_or(motion_mask, motion_mask, masked_img,mask=mask_warped);
 					bitwise_or(motion_mask, mask_warped, masked_img);
-					cv::imshow("modified maskkk real right cam", masked_img);
+				//	cv::imshow("modified maskkk real right cam", masked_img);
 					mask_warped=masked_img;
+					
+					bitwise_and(img_warped,img_warped,res_temp,mask_warped);
+					cv::imshow("temp_result_right_cam",res_temp);
+
+
 				}
 
 				/*
@@ -840,24 +848,40 @@ cv::Rect adaptive_crop_panorama(const Mat& stitched_image) {
 					Mat masked_img,mask_temp,te,mask_copy;
 
 					cv::Mat motion_maskk = computeMotionMaskk(img_warped);
-					cv::imshow("motion mask is ", motion_maskk);
+				//	cv::imshow("motion mask is ", motion_maskk);
 
 					cv::bitwise_not(mask_warped, mask_copy);	
-					cv::imshow("mask_warped",mask_warped);
+				//	cv::imshow("mask_warped",mask_warped);
 					bitwise_and(motion_maskk,mask_copy,te);
-					cv::imshow("mask_copy + motion mask &",te);
+				//	cv::imshow("mask_copy + motion mask &",te);
 					cv::bitwise_not(te, mask_temp);	
-					cv::imshow("mask_copy + motion mask & but inverted",mask_temp);
+				//	cv::imshow("mask_copy + motion mask & but inverted",mask_temp);
 
 					cv::Mat resi,resi_temp;
 					bitwise_and(first_frame,first_frame,resi_temp,mask_temp);
 					//bitwise_and(img_warped,img_warped,resi_temp,mask_temp);
-					cv::imshow("temp_result",resi_temp);
+					cv::imshow("temp_result_left_cam",resi_temp);
+
+					Mat half_changing,half_right;
+// Define the right half of first_frame as the target region
+					half_right = resi_temp(Rect(first_frame.cols / 2, 0,first_frame.cols - first_frame.cols / 2,first_frame.rows));
+					half_changing = img_warped(Rect(first_frame.cols / 2, 0,first_frame.cols - first_frame.cols / 2,first_frame.rows));
+					half_changing.copyTo(half_right);
+
+
+
+					//half_right = resi_temp(Rect(first_frame.cols / 2, 0,first_frame.cols - first_frame.cols / 2,first_frame.rows));
+					//half_changing = img_warped(Rect(first_frame.cols / 2, 0,first_frame.cols - first_frame.cols / 2,first_frame.rows));
+					//half_changing.copyTo(half_right);
+
+
+					cv::imshow("half part is is ",half_right);
 
 					img_warped_s.convertTo(img_warped_s, CV_8U);  // simple scale, might clip
 					img_warped_s=resi_temp;
 					mask_warped=mask_temp;
-					cv::imshow("result copied to img_warped_s",img_warped);
+					cv::imshow("img_warped_sgoing to blender is ",img_warped_s);
+					cv::imshow("mask warped going to blender is ",mask_warped);
 
 					img_warped_s.convertTo(img_warped_s, CV_16S);
 
