@@ -16,17 +16,13 @@
 ## Compilation steps
 
 ```bash
-g++ main.cpp -o main `pkg-config --cflags --libs opencv4`
+g++ mipi_codes/latest_updates.cpp -o play `pkg-config --cflags --libs opencv4`
 ```
-
-### Note: If using openmp compiler directives 
-
-g++ -fopenmp main.cpp -o main `pkg-config --cflags --libs opencv4`
-
 ## Example pipeline
 
-./main --conf_thresh 0.5
-
+```bash
+./play --conf_thresh 0.5
+```
 
 
 
