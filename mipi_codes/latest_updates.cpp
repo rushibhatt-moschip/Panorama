@@ -44,7 +44,7 @@ int crop=0; //output crop flag
 int crop_input=0; //input crop flag
 int resize_win=0; //output window resize flag
 cv::Rect dst_roi ; //safe canvas size to remove assertion error
-// input crop coordinates
+		   // input crop coordinates
 int left_x_cor=0;
 int left_y_cor=0;
 int left_width=640;
@@ -364,17 +364,13 @@ int main(int argc, char* argv[])
 	int fps = 7;
 	//icap.set(cv::CAP_PROP_FRAME_WIDTH, width);
 	//cap.set(cv::CAP_PROP_FRAME_HEIGHT, height);
-//cap1.set(cv::CAP_PROP_FPS, fps);
-//cap2.set(cv::CAP_PROP_FPS, fps);
+	//cap1.set(cv::CAP_PROP_FPS, fps);
+	//cap2.set(cv::CAP_PROP_FPS, fps);
 	// Define video codec and output file
 	//int fourcc = cv::VideoWriter::fourcc('M','J','P','G'); // safer for embedded
 	int fourcc = cv::VideoWriter::fourcc('D','I','V','X'); // safer for embedded
 	cv::VideoWriter writer;
 	//("output.avi", fourcc, fps, cv::Size(wid, hei));
-
-
-
-
 
 	while(1){	
 		cap1 >> frame1;
@@ -410,8 +406,8 @@ int main(int argc, char* argv[])
 		cv::convertScaleAbs(frame2, frame2, 0.25, 0);
 		cv::cvtColor(frame1, frame1, cv::COLOR_BayerGR2BGR);
 		cv::cvtColor(frame2, frame2, cv::COLOR_BayerGR2BGR);
-	//	cv::imshow("bayer_2_bgr",frame1);
-	//	cv::waitKey();
+		//	cv::imshow("bayer_2_bgr",frame1);
+		//	cv::waitKey();
 
 		if (frame1.empty() || frame2.empty()) return 0;
 
@@ -456,18 +452,14 @@ int main(int argc, char* argv[])
 			computeImageFeatures(finder, img, features[i]);
 			features[i].img_idx = i;
 
-	//	cv::imshow("work_scale resized",img);
-	//	cv::waitKey();
-
+			//	cv::imshow("work_scale resized",img);
+			//	cv::waitKey();
 
 			// Resize again for seam
 			resize(full_img, img, Size(), seam_scale, seam_scale, INTER_LINEAR_EXACT);
 			images[i] = img.clone();
-	//	cv::imshow("seam_scale resized",img);
-	//	cv::waitKey();
-
-
-			
+			//	cv::imshow("seam_scale resized",img);
+			//	cv::waitKey();
 			// Save the size safely
 			full_img_sizes[i] = full_img_size;
 			//cout << "size is " << full_img_size << endl;
@@ -515,11 +507,11 @@ int main(int argc, char* argv[])
 				cameras[i].R = R;
 			}
 			/*cout << "=== BEFORE Bundle Adjuster  ===" << endl;
-			for (size_t i = 0; i < cameras.size(); ++i)
-			{
-				cout << "Camera " << i << " focal = " << cameras[i].focal << endl;
-				cout << "R = \n" << cameras[i].R << endl << endl;
-			}*/
+			  for (size_t i = 0; i < cameras.size(); ++i)
+			  {
+			  cout << "Camera " << i << " focal = " << cameras[i].focal << endl;
+			  cout << "R = \n" << cameras[i].R << endl << endl;
+			  }*/
 			//optimize cam matrix value to reduce geometric error
 			//raybundleadjustment technique is used
 
@@ -543,19 +535,19 @@ int main(int argc, char* argv[])
 			}
 
 			/*
-			cout << "=== After Bundle Adjuster ===" << endl;
-			for (size_t i = 0; i < cameras.size(); ++i)
-			{
-				cout << "Camera " << i << " focal = " << cameras[i].focal << endl;
-				cout << "R = \n" << cameras[i].R << endl << endl;
-			}
-			*/
-			
+			   cout << "=== After Bundle Adjuster ===" << endl;
+			   for (size_t i = 0; i < cameras.size(); ++i)
+			   {
+			   cout << "Camera " << i << " focal = " << cameras[i].focal << endl;
+			   cout << "R = \n" << cameras[i].R << endl << endl;
+			   }
+			   */
+
 			// Find median focal length
 			for (size_t i = 0; i < cameras.size(); ++i)
 			{
 				focals.push_back(cameras[i].focal);
-			//	cout << "focal length is " << cameras[i].focal << endl;
+				//	cout << "focal length is " << cameras[i].focal << endl;
 			}
 
 			sort(focals.begin(), focals.end());
@@ -572,7 +564,7 @@ int main(int argc, char* argv[])
 			waveCorrect(rmats, wave_correct);
 			for (size_t i = 0; i < cameras.size(); ++i)
 				cameras[i].R = rmats[i];
-			
+
 			//creating masks for all images
 			for (int i = 0; i < num_images; ++i)
 			{
@@ -639,10 +631,10 @@ int main(int argc, char* argv[])
 				//corners[i] = warper->warp(images[i], K, cameras[i].R, INTER_LINEAR, BORDER_CONSTANT, images_warped[i]);
 				sizes[i] = images_warped[i].size();
 				warper->warp(masks[i], K, cameras[i].R, INTER_NEAREST, BORDER_CONSTANT, masks_warped[i]);
-			//	cv::imshow("img_warped_border_reflect",images_warped[i]);
-			//	cv::waitKey();	
-			//	cv::imshow("mask_warped_border_constant",masks_warped[i]); 
-			//	cv::waitKey();	
+				//	cv::imshow("img_warped_border_reflect",images_warped[i]);
+				//	cv::waitKey();
+				//	cv::imshow("mask_warped_border_constant",masks_warped[i]);
+				//	cv::waitKey();
 			}
 		}
 
@@ -766,7 +758,7 @@ int main(int argc, char* argv[])
 			//check if the output is valid or will throw assertion error
 			if(dst_roi.width>1400||dst_roi.height>800|| dst_roi.height<300||dst_roi.width<500)
 			{
-				cout<< "Output stream error, Please dont move on the overlapping region and run the code again" << endl;
+				cout<< "Output stream error, Try increasing the overlapping region and do vertical height sync" << endl;
 				return -1;
 			}
 			blender->feed(img_warped_s, mask_warped, corners[img_idx]);
@@ -779,7 +771,7 @@ int main(int argc, char* argv[])
 		Mat result_8u;
 		result.convertTo(result_8u, CV_8U);  // simple scale, might clip
 
-	//	imshow("Greenish result", result_8u);
+		//	imshow("Greenish result", result_8u);
 		double gain_b, gain_r;
 		result_8u = auto_white_balance(result_8u, 50, 1e-6, &gain_b, &gain_r);
 		Rect rroi = resultRoi(corners, sizes); // valid stitched region
@@ -796,12 +788,12 @@ int main(int argc, char* argv[])
 				resizeWindow("Stitched Video", rroi.width+rroi.width, rroi.height+rroi.height);
 		}
 		imshow("Stitched Video", result_8u);
-	if(count ==0){	
-		wid=result_8u.cols;
-		hei=result_8u.rows;
-	//cv::VideoWriter
-	       	writer.open("output.avi", fourcc, fps, cv::Size(wid, hei));
-	}
+		if(count ==0){
+			wid=result_8u.cols;
+			hei=result_8u.rows;
+			//cv::VideoWriter
+			writer.open("output.avi", fourcc, fps, cv::Size(wid, hei));
+		}
 		writer.write(result_8u);
 		int key = waitKey(1);
 
@@ -835,7 +827,5 @@ int main(int argc, char* argv[])
 	cap2.release();
 	writer.release();
 	cv::destroyAllWindows();
-
-
 	return 0;
 }
