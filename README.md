@@ -15,7 +15,9 @@
 
 ## Compilation steps
 
+```bash
 g++ main.cpp -o main `pkg-config --cflags --libs opencv4`
+```
 
 ### Note: If using openmp compiler directives 
 
