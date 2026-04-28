@@ -20,7 +20,6 @@
 #include <chrono>
 #include <thread>
 #include <cmath>
-#include <opencv2/cudawarping.hpp>
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/cuda.hpp>
 #ifdef HAVE_OPENCV_XFEATURES2D
@@ -271,6 +270,7 @@ static int parseCmdArgs(int argc, char** argv)
 		else if (string(argv[i]) == "--crop_input")
 		{
 			cout << "Input Crop is enabled\n" << endl;
+			cout << "This will crop the input feed, Use this only if you are getting large area of black region which is rarely the case\n" << endl;
 			cout << "Rect (x_corr, y_corr, width, height)" << endl; 
 			cout << "Example : ./main --conf_thresh 0.5 --crop_input 0 0 640 400 0 0 640 400" << endl;
 			cout << "start with left cam input Rect (0, 0, 640, 400)\n" << endl; 
@@ -296,7 +296,9 @@ static int parseCmdArgs(int argc, char** argv)
 
 int main(int argc, char* argv[])
 {
-	cout << "Press 'q' to exit" << endl;
+	cout << "\n\nPress 'q' to exit" << endl;
+	cout << "Press 'n' to refresh everything" << endl;
+	cout << "Press 's' to refresh only seam" << endl;
 	cv::Mat xmap, ymap, xmap1, ymap1;
 	cv::Rect roi, mask_roi;
 	Rect safe_crop_box;
@@ -381,7 +383,8 @@ int main(int argc, char* argv[])
 		//Brightness Compensator
 		mipi_init_flag+=1;
 		if (mipi_init_flag == 1) { 
-			std::system("v4l2-ctl -d /dev/video1 -c analogue_gain=800"); 
+			std::system("v4l2-ctl -d /dev/video1 -c analogue_gain=1100");
+			std::system("v4l2-ctl -d /dev/video0 -c analogue_gain=400");
 			//std::system("v4l2-ctl -d /dev/video0 --all"); 
 			// Flush 20 frames so new settings apply 
 			for (int i = 0; i < 20; i++) { 
@@ -433,7 +436,7 @@ int main(int argc, char* argv[])
 			if (!is_work_scale_set) {
 				work_scale = min(1.0, sqrt(work_megapix * 1e6 / full_img.size().area()));
 				//work_scale=0.8;
-				cout << "work scale is " << work_scale << endl ; 
+				//cout << "work scale is " << work_scale << endl ; 
 				is_work_scale_set = true;
 			}
 
@@ -444,7 +447,7 @@ int main(int argc, char* argv[])
 			if (!is_seam_scale_set) {
 				seam_scale = min(1.0, sqrt(seam_megapix * 1e6 / full_img.size().area()));
 				//seam_scale=0.6;
-				cout << "seam_scale is " << seam_scale <<endl;
+				//cout << "seam_scale is " << seam_scale <<endl;
 				seam_work_aspect = seam_scale / work_scale;
 				is_seam_scale_set = true;
 			}
@@ -467,7 +470,7 @@ int main(int argc, char* argv[])
 			
 			// Save the size safely
 			full_img_sizes[i] = full_img_size;
-			cout << "size is " << full_img_size << endl;
+			//cout << "size is " << full_img_size << endl;
 		}
 		if (count != 0) {
 			for (int i = 0; i < num_images; ++i) {
@@ -511,12 +514,12 @@ int main(int argc, char* argv[])
 				cameras[i].R.convertTo(R, CV_32F);
 				cameras[i].R = R;
 			}
-			cout << "=== BEFORE Bundle Adjuster  ===" << endl;
+			/*cout << "=== BEFORE Bundle Adjuster  ===" << endl;
 			for (size_t i = 0; i < cameras.size(); ++i)
 			{
 				cout << "Camera " << i << " focal = " << cameras[i].focal << endl;
 				cout << "R = \n" << cameras[i].R << endl << endl;
-			}
+			}*/
 			//optimize cam matrix value to reduce geometric error
 			//raybundleadjustment technique is used
 
@@ -539,17 +542,20 @@ int main(int argc, char* argv[])
 				return -1;
 			}
 
+			/*
 			cout << "=== After Bundle Adjuster ===" << endl;
 			for (size_t i = 0; i < cameras.size(); ++i)
 			{
 				cout << "Camera " << i << " focal = " << cameras[i].focal << endl;
 				cout << "R = \n" << cameras[i].R << endl << endl;
 			}
+			*/
+			
 			// Find median focal length
 			for (size_t i = 0; i < cameras.size(); ++i)
 			{
 				focals.push_back(cameras[i].focal);
-				cout << "focal length is " << cameras[i].focal << endl;
+			//	cout << "focal length is " << cameras[i].focal << endl;
 			}
 
 			sort(focals.begin(), focals.end());
@@ -818,7 +824,7 @@ int main(int argc, char* argv[])
 			cout << "calculating again" << endl;
 		}
 		// Quit 
-		if (key == 'q' || key == 'l')  // press 'q' or 'Q' to quit
+		if (key == 'q' || key == 'Q')  // press 'q' or 'Q' to quit
 		{
 			cout << "Exiting on user request..." << endl;
 			break;   // exit the loop
