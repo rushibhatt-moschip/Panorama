@@ -70,6 +70,9 @@ vector<CameraParams> cameras;
 vector<double> focals;
 vector<MatchesInfo> pairwise_matches;
 
+bool save_graph = false;
+std::string save_graph_to;
+
 float warped_image_scale;
 
 static int parseCmdArgs(int argc, char** argv)
@@ -331,6 +334,11 @@ int main(int argc, char* argv[])
 	Mat frame1, frame2;
 	Mat_<float> K;
 
+	cv::Mat full_img, img;
+	vector<ImageFeatures> features(num_images);
+	vector<cv::Mat> images(num_images);
+	vector<cv::Size> full_img_sizes(num_images);
+
 	vector<UMat> masks_warped(num_images);
 	vector<UMat> images_warped(num_images);
 	vector<UMat> masks(num_images);
@@ -352,11 +360,11 @@ int main(int argc, char* argv[])
 	 * set its properties ,i.e., Width, Height, Frame rate and color format
 	 */
 
-	//VideoCapture cap1("/home/devashree-katarkar/camera1_output_first.mkv");
-	//VideoCapture cap2("/home/devashree-katarkar/camera2_output_first.mkv");
+	VideoCapture cap1("/home/rushi/1_MY_BEV/web_cam_data/video_left.mkv");
+	VideoCapture cap2("/home/rushi/1_MY_BEV/web_cam_data/video_right.mkv");
 
-	VideoCapture cap1(0, CAP_V4L2);
-	VideoCapture cap2(2, CAP_V4L2);
+	//VideoCapture cap1(0, CAP_V4L2);
+	//VideoCapture cap2(2, CAP_V4L2);
 
 	//std::cout << "Backend used: " << cap1.getBackendName() << std::endl;
 	//std::cout << "Backend used: " << cap2.getBackendName() << std::endl;
