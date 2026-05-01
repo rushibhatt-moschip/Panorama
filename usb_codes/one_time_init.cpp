@@ -56,6 +56,8 @@ float blend_strength = 5;
 string result_name   = "Result.jpg";
 bool timelapse       = false;
 int range_width      = -1;
+int mode=0;
+string video1,video2;
 
 Ptr<detail::BundleAdjusterBase> adjuster;
 Ptr<Estimator> estimator;
@@ -79,6 +81,8 @@ static int parseCmdArgs(int argc, char** argv)
 {
 	if (argc == 1)
 	{
+		cout << "\n---Usage---\n./play --conf_thresh 0.5 --live\n" << endl;
+		cout << "./play --saved <video1> <video2> --conf_thresh 0.5\n";
 		//printUsage(argv);
 		return -1;
 	}
@@ -89,6 +93,16 @@ static int parseCmdArgs(int argc, char** argv)
 		{
 			//printUsage(argv);
 			return -1;
+		}
+		else if (string(argv[i]) == "--live")
+		{
+			mode=1;
+		}
+		else if (string(argv[i]) == "--saved")
+		{
+			video1=argv[i+1];
+			video2=argv[i+2];
+			mode=0;
 		}
 		else if (string(argv[i]) == "--preview")
 		{
@@ -352,6 +366,7 @@ int main(int argc, char* argv[])
 	Size dst_sz;
 	Size target_size(640, 480);
 	
+	VideoCapture cap1, cap2;
 	int retval = parseCmdArgs(argc, argv);
 	if (retval)
 		return retval;
@@ -360,11 +375,20 @@ int main(int argc, char* argv[])
 	 * set its properties ,i.e., Width, Height, Frame rate and color format
 	 */
 
-	VideoCapture cap1("/home/rushi/1_MY_BEV/web_cam_data/video_left.mkv");
-	VideoCapture cap2("/home/rushi/1_MY_BEV/web_cam_data/video_right.mkv");
-
-	//VideoCapture cap1(0, CAP_V4L2);
-	//VideoCapture cap2(2, CAP_V4L2);
+//	VideoCapture cap1("/home/rushi/1_MY_BEV/web_cam_data/video_left.mkv");
+//	VideoCapture cap2("/home/rushi/1_MY_BEV/web_cam_data/video_right.mkv");
+	if (mode){
+	cap1.open(0, CAP_V4L2);
+	cap2.open(2, CAP_V4L2);
+	}
+	else{
+	cap1.open(video1);
+	cap2.open(video2);
+	//cap1.open("/home/rushi/1_MY_BEV/web_cam_data/video_left.mkv");
+	//cap2.open("/home/rushi/1_MY_BEV/web_cam_data/video_right.mkv");
+	}
+//	VideoCapture cap1(0, CAP_V4L2);
+//	VideoCapture cap2(2, CAP_V4L2);
 
 	//std::cout << "Backend used: " << cap1.getBackendName() << std::endl;
 	//std::cout << "Backend used: " << cap2.getBackendName() << std::endl;
