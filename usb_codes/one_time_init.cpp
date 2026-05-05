@@ -444,7 +444,7 @@ int main(int argc, char* argv[])
 			}
 
 			//resize(full_img, img, target_size, 0, 0, INTER_LINEAR_EXACT);
-
+			//Work scale resizing is done for feature detection and matching
 			resize(full_img, img, Size(), work_scale, work_scale, INTER_LINEAR_EXACT);
 			if (!is_seam_scale_set)
 			{
@@ -456,6 +456,7 @@ int main(int argc, char* argv[])
 			computeImageFeatures(finder, img, features[i]);
 			features[i].img_idx = i;
 			//LOGLN("Features in image #" << i+1 << ": " << features[i].keypoints.size());
+			//Seam scale resizing is for seam_find
 			resize(full_img, img, Size(), seam_scale, seam_scale, INTER_LINEAR_EXACT);
 			//resize(full_img, img, target_size, 0, 0, INTER_LINEAR_EXACT);
 			images[i] = img.clone();
@@ -469,11 +470,26 @@ int main(int argc, char* argv[])
 			images[i] = seam_img.clone();
 		}
 
+		/* Matcher object initialization
+		 * 		|
+		 * Homography object initialization
+		 * 		|
+		 * Camera parameter estimation
+		 * 		|
+		 * Bundle Adjustment
+		 * 		|
+		 * Mask creation
+		 * 		|
+		 * Seam Finding, warper selection, compensator obj init
+		 *
+		*/
 
 		if(fg == 1){
 
 			matcher = makePtr<BestOf2NearestRangeMatcher>(range_width, try_cuda, match_conf);
 			(*matcher)(features, pairwise_matches);
+
+			//frees internal memory after matching
 			matcher->collectGarbage();
 			estimator = makePtr<HomographyBasedEstimator>();
 
@@ -580,10 +596,10 @@ int main(int argc, char* argv[])
 			fg = 0;
 		}
 
+		//warping
 		for (int i = 0; i < num_images; ++i)
 		{
 			if (count == 0){
-
 				masks[i].setTo(Scalar::all(255));
 
 				cameras[i].K().convertTo(K, CV_32F);
@@ -670,14 +686,14 @@ int main(int argc, char* argv[])
 					compose_scale = min(1.0, sqrt(compose_megapix * 1e6 / full_img.size().area()));
 				is_compose_scale_set = true;
 
-				// Compute relative scales
+				//Compute relative scales
 				compose_work_aspect = compose_scale / work_scale;
 
-				// Update warped image scale
+				//Update warped image scale
 				warped_image_scale *= static_cast<float>(compose_work_aspect);
 				warper = warper_creator->create(warped_image_scale);
 
-				// Update corners and sizes
+				//Update corners and sizes
 				for (int i = 0; i < num_images; ++i)
 				{
 					// Update intrinsics
@@ -710,19 +726,19 @@ int main(int argc, char* argv[])
 			Mat K;
 			cameras[img_idx].K().convertTo(K, CV_32F);
 
-			// Warp the current image
+			//Warp the current image
 			warper->warp(img, K, cameras[img_idx].R, INTER_LINEAR, BORDER_REFLECT, img_warped);
 
-			// Warp the current image mask
+			//Warp the current image mask
 			mask.create(img_size, CV_8U);
 			mask.setTo(Scalar::all(255));
 			warper->warp(mask, K, cameras[img_idx].R, INTER_NEAREST, BORDER_CONSTANT, mask_warped);
 
-			// Compensate exposure
+			//Compensate exposure
 			compensator->apply(img_idx, corners[img_idx], img_warped, mask_warped);
 			img_warped.convertTo(img_warped_s, CV_16S);
 
-			// Compensate exposure
+			//Compensate exposure
 			img_warped.release();
 			full_img.release();
 			mask.release();
@@ -730,7 +746,7 @@ int main(int argc, char* argv[])
 			resize(dilated_mask, seam_mask, mask_warped.size(), 0, 0, INTER_LINEAR_EXACT);
 			mask_warped = seam_mask & mask_warped;
 
-			// Compensate exposure
+			//Compensate exposure
 			if (!blender && !timelapse)
 			{
 				blender = Blender::createDefault(blend_type, try_cuda);
@@ -748,8 +764,7 @@ int main(int argc, char* argv[])
 			blender->feed(img_warped_s, mask_warped, corners[img_idx]);
 		}
 
-		if (sg) 
-		{
+		if (sg){
 			writer.open("output.avi",
 					cv::VideoWriter::fourcc('M', 'J', 'P', 'G'), // MJPEG codec
 					30,                                       // FPS

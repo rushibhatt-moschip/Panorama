@@ -309,6 +309,8 @@ int main(int argc, char* argv[])
 	cv::setBreakOnError(true);
 #endif
 	int retval = parseCmdArgs(argc, argv);
+	if (argc==1)
+		cout << "Usage: ./play --conf_thresh 0.5 resultant_imgs/im1.jpg resultant_imgs/im2.jpg" << endl;
 	if (retval)
 		return retval;
 	// Check if have enough images
