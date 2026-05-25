@@ -13,7 +13,8 @@ calibrate bird eye view.
 int main (int argc, char* argv[]) {
 
     if (argc < 2 || argc > 4) {
-        printf("Invalid number of arguments. This_script image_path yml_save_path \n");
+        printf("Invalid number of arguments. This_script image_path yml_save_path image_save_path\n");
+        printf("./play ./left_img.jpg ./left_pers.yml ./left_transformed.jpg\n");
         exit(0);
     }
     

@@ -96,11 +96,20 @@ int main(int argc, char **argv) {
 //	VideoCapture cap1("/home/rushi/1_MY_BEV/web_cam_data/video_left.mkv");
 // 	VideoCapture cap2("/home/rushi/1_MY_BEV/web_cam_data/video_right.mkv");
 // 	VideoCapture cap3("/home/rushi/1_MY_BEV/web_cam_data/video_left.mkv");
-
-	VideoCapture cap1(2, cv::CAP_V4L2);
-	VideoCapture cap2(0, cv::CAP_V4L2);
-	VideoCapture cap3(5, cv::CAP_V4L2);
+	if(argc < 4){
+		cout << "Usage: ./play node of leftcamera node of mid camera node of right camera" << endl;
+		cout << "Usage: ./play 0 2 4 " << endl;
+		return -1;
+	}
 	
+	int cam1_id = stoi(argv[1]);
+	int cam2_id = stoi(argv[2]);
+	int cam3_id = stoi(argv[3]);
+
+	VideoCapture cap1(cam1_id, cv::CAP_V4L2);
+	VideoCapture cap2(cam2_id, cv::CAP_V4L2);
+	VideoCapture cap3(cam3_id, cv::CAP_V4L2);
+
 	if (!cap1.isOpened() || !cap2.isOpened() || !cap3.isOpened()) {
 		std::cout << "unable to open webcam" << std::endl;
 	}
@@ -118,18 +127,18 @@ int main(int argc, char **argv) {
 	FileStorage fs("master.yml", FileStorage::READ);
 
 	if (!fs.isOpened()) {
-		cerr << "Error: Could not open the file for reading!" << endl;
+		cerr << "Error: Could not open the master yml file for reading!" << endl;
 		return -1;
 	}
 
-	FileStorage transform_1("c1-mat.yml", FileStorage::READ);
-	FileStorage transform_2("c2-mat.yml", FileStorage::READ);
-	FileStorage transform_3("c3-mat.yml", FileStorage::READ);
+	FileStorage transform_1("left_pers.yml", FileStorage::READ);
+	FileStorage transform_2("right_pers.yml", FileStorage::READ);
+	FileStorage transform_3("mid_pers.yml", FileStorage::READ);
 	
-	Mat mask_left_0 = imread("c1-view_blendmask_0.jpg");
-	Mat mask_center_0 = imread("c2-view_blendmask_0.jpg");
-	Mat mask_center_1 = imread("c2-view_blendmask_1.jpg");
-	Mat mask_right_0 = imread("c3-view_blendmask_0.jpg");
+	Mat mask_left_0 = imread("left_transformed_blendmask_0.jpg");
+	Mat mask_center_0 = imread("mid_transformed_blendmask_0.jpg");
+	Mat mask_center_1 = imread("mid_transformed_blendmask_1.jpg");
+	Mat mask_right_0 = imread("right_transformed_blendmask_0.jpg");
 	
 	if (mask_left_0.empty()) {
 		std::cerr << "error loading image! left" << std::endl;

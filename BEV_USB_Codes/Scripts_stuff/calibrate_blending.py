@@ -1,4 +1,4 @@
-''' 
+HELP = '''
 Calibrate the blending onto an image. 
     script format : arg_1 = image_path 
 
@@ -8,6 +8,7 @@ Calibrate the blending onto an image.
         Quit                    : Esc
         translation             : 'q' : left | 'w' : up | 'e' : down | 'r' : right 
         change point            : space 
+        Flip the mask           : 'f'
         clean blending          : 'c'
         get out of clean blend  : Esc
         save blending mask      : 's'
@@ -63,10 +64,9 @@ def parse_yml(yml_path, img_list_len):
 def parse_name():
 
     # images_path, yml_path, save_folder. 
-    if len(sys.argv) < 3:
-        print("give image path as argument argument : images_path, yml_path, save_folder\n")
+    if len(sys.argv) < 4:
+        print("give image path as argument argument : images_path, yml_path, save_folder\n{}".format(HELP))
         exit(0)
-    
     # reading image into a list 
     image_paths = sys.argv[1].split(',')
     image_list = []

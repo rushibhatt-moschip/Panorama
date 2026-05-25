@@ -1,12 +1,15 @@
 HELP = '''
-    Script or program to calibrate the images overlap. can calibrate 2 images at a time. out of 2, one is considered stationary, reference. 
+    Script or program to calibrate the images overlap. can calibrate 3 images at a time.
 
-    usage : this script <images path seperated with commas> <yml info save path> <image_2_side {default : right }
-        first image path should be one with that is constant. 
+    usage : this script <images path seperated with commas> <yml info save path>
+            python3 ../Scripts_stuff/calibrate_all.py ./left_transformed.jpg,./mid_transformed.jpg,./right_transformed.jpg ./master.yml
 
     images it takes is after bird eyed view images.
 
-    controls : 
+    controls :
+        Switching the selected image:
+            1 -> Next iamge
+            2 -> previous image
         moving image : 
             q -> left | w -> up | e -> down | r -> right 
         scaling image : 
@@ -15,9 +18,10 @@ HELP = '''
         rotation : 
             'n' -> angle - 
             'm' -> angle +
-        rotation center movement : 
+        rotation center movement : Centre about which the image gets rotated
             u -> left | i -> up | o -> down | p -> right 
-    
+        Save and exit:
+            'esc'
 '''
 
 
